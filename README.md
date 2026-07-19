@@ -55,9 +55,10 @@ npx wrangler login
 # 1. Create the KV namespace, then paste the printed id into wrangler.toml
 npx wrangler kv namespace create MEW_STATE
 
-# 2. Store your LINE secrets (never commit these)
-npx wrangler secret put LINE_TOKEN   # paste your LINE channel access token
-npx wrangler secret put GROUP_ID     # paste your LINE group/user id
+# 2. Store your secrets (never commit these)
+npx wrangler secret put LINE_TOKEN      # paste your LINE channel access token
+npx wrangler secret put GROUP_ID        # paste your LINE group/user id
+npx wrangler secret put ADMIN_PASSWORD  # any strong password, for the /admin page
 
 # 3. Ship it
 npm run deploy
@@ -70,9 +71,9 @@ npm run deploy
 
 In the Cloudflare dashboard: **Workers & Pages → Create → Connect to Git**,
 pick this repo. Cloudflare runs `wrangler deploy` on every push to the branch.
-Then set the KV namespace + the `LINE_TOKEN` / `GROUP_ID` secrets in
-**Worker → Settings → Variables and Secrets**. After this, every commit here
-deploys itself.
+Then set the KV namespace + the `LINE_TOKEN` / `GROUP_ID` / `ADMIN_PASSWORD`
+secrets in **Worker → Settings → Variables and Secrets**. After this, every
+commit here deploys itself.
 
 ## Point Distill at the new URL
 
@@ -92,7 +93,30 @@ params (query params or JSON body both work):
 The first ping per monitor records a silent baseline (no alert); every change
 after that is diffed against it.
 
-## Filtering (`config.json`)
+## Changing filters — the admin page
+
+There are **two** ways to change filters, and they layer:
+
+1. **`config.json`** (this repo) = the committed *defaults*. Edit + push (or ask
+   Claude to) and it redeploys. Good for the baseline rules.
+2. **`/admin`** = a live editor that writes a *runtime override* into KV. Changes
+   take effect on the very next ping — **no redeploy**.
+
+Open `https://mew-alerts.<subdomain>.workers.dev/admin`, enter your
+`ADMIN_PASSWORD`, and you get a form (mobile-friendly) to:
+
+- edit the **Default** rules (apply to every monitor),
+- add a **per-monitor override** (it lists monitors it has already seen so you
+  can pick one), toggling include/exclude keywords, min-change size, or muting.
+
+Effective rule for a monitor = `DEFAULTS` → `config.json` default → KV override
+default → `config.json` monitor → KV override monitor (later wins). To fall back
+to the committed `config.json`, delete the `config::override` KV key.
+
+> The `/admin` page HTML is public, but every read/write requires the password
+> (checked server-side). Use a long random `ADMIN_PASSWORD`.
+
+## Filter fields (`config.json` and the admin form)
 
 A `default` block plus optional per-monitor overrides keyed by the exact Distill
 monitor name:
