@@ -581,8 +581,13 @@ async function fetchTonamelCompetitions(orgId, gameId) {
         "accept-language": "en-US,en;q=0.9",
         origin: "https://tonamel.com",
         referer: referer,
+        // Many endpoints gate on the mere presence of these custom headers.
+        "x-csrf-token": crypto.randomUUID().toUpperCase(),
         "x-page-view-id": crypto.randomUUID(),
         "x-page-view-location": referer,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
         "user-agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       },
