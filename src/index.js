@@ -297,8 +297,21 @@ function parseLinkedItems(body) {
     .filter(Boolean);
 }
 
+function dedupeByUrl(items) {
+  const seen = new Set();
+  const out = [];
+  for (const it of items) {
+    if (seen.has(it.url)) continue;
+    seen.add(it.url);
+    out.push(it);
+  }
+  return out;
+}
+
 async function handleLinkedWebhook(env, name, body, cfg) {
-  const items = parseLinkedItems(body);
+  // Some pages render the list more than once (responsive/duplicate DOM), so
+  // dedupe by URL before doing anything else.
+  const items = dedupeByUrl(parseLinkedItems(body));
   const inc = (cfg.include || []).map(lc);
   const exc = (cfg.exclude || []).map(lc);
   const matching = items.filter((it) => matchTitle(it.title, inc, exc));
