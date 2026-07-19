@@ -33,7 +33,16 @@ export default {
     if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
       return handleAdmin(request, env, url);
     }
+    // Manual trigger for the Tonamel poller (handy for testing): /poll
+    if (url.pathname === "/poll") {
+      return handlePollTrigger(request, env, url);
+    }
     return handleWebhook(request, env);
+  },
+
+  // Cron entrypoint — polls the Tonamel GraphQL API for new matching events.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runTonamelPolls(env));
   },
 };
 
@@ -303,11 +312,13 @@ function mergeConfig(base, over) {
   const out = {
     default: { ...(base && base.default) },
     monitors: { ...(base && base.monitors) },
+    tonamel: base && base.tonamel ? base.tonamel : undefined,
   };
   if (over && over.default) Object.assign(out.default, over.default);
   if (over && over.monitors) {
     for (const k of Object.keys(over.monitors)) out.monitors[k] = over.monitors[k];
   }
+  if (over && over.tonamel) out.tonamel = over.tonamel;
   return out;
 }
 
@@ -434,6 +445,175 @@ function html(body, status = 200) {
     status,
     headers: { "content-type": "text/html; charset=utf-8", "x-robots-tag": "noindex" },
   });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Tonamel poller — queries the GraphQL API directly for new matching events.
+// Configured via the "tonamel" block in config.json. Runs on the cron trigger
+// (see wrangler.toml) and can be fired manually via GET /poll?key=ADMIN_PASSWORD.
+// ════════════════════════════════════════════════════════════════════════════
+const TONAMEL_ENDPOINT = "https://tonamel.com/graphql/competition_management";
+const TONAMEL_QUERY =
+  "query getOrganizationGameCompetitions($organizationId: ID!, $gameId: ID!, $filter: CompetitionsFilter!) {" +
+  " organization(id: $organizationId) { id game(id: $gameId) { competitions(filter: $filter) {" +
+  " edges { node { id title status publicStatus" +
+  " entryMenus { participantChosenNum countSummary { currentEntrantNum } } } } } } } }";
+
+async function handlePollTrigger(request, env, url) {
+  // Password-gate the manual trigger (reuse ADMIN_PASSWORD).
+  const key = url.searchParams.get("key") || "";
+  if (!env.ADMIN_PASSWORD || !safeEqual(key, env.ADMIN_PASSWORD)) {
+    return text("unauthorized", 401);
+  }
+  const summary = await runTonamelPolls(env);
+  return json({ ok: true, ran: summary });
+}
+
+async function runTonamelPolls(env) {
+  const cfgAll = await loadConfig(env);
+  const t = cfgAll.tonamel;
+  if (!t || t.enabled === false || !Array.isArray(t.monitors)) return [];
+
+  const summary = [];
+  for (const mon of t.monitors) {
+    try {
+      summary.push(await pollTonamelMonitor(env, mon));
+    } catch (err) {
+      console.log("Tonamel poll error for " + (mon && mon.name) + ": " + (err && err.stack ? err.stack : err));
+      summary.push({ name: mon && mon.name, error: String(err) });
+    }
+  }
+  return summary;
+}
+
+async function pollTonamelMonitor(env, mon) {
+  const events = await fetchTonamelCompetitions(mon.organizationId, mon.gameId);
+  if (!events) return { name: mon.name, error: "fetch failed (see logs)" };
+
+  const inc = (mon.include || []).map((s) => s.toLowerCase());
+  const exc = (mon.exclude || []).map((s) => s.toLowerCase());
+  const matching = events.filter((e) => matchTitle(e.title, inc, exc));
+
+  const key = "tonamel::" + mon.organizationId + "::" + mon.gameId;
+  const raw = await env.MEW_STATE.get(key);
+  const currentIds = matching.map((e) => e.id);
+
+  // First run: record a silent baseline so we don't alert on the whole list.
+  if (raw === null) {
+    await env.MEW_STATE.put(key, JSON.stringify(currentIds));
+    console.log("Tonamel baseline for " + mon.name + " (" + matching.length + " matching)");
+    return { name: mon.name, baseline: matching.length };
+  }
+
+  let seen = [];
+  try { seen = JSON.parse(raw) || []; } catch (e) { seen = []; }
+  const seenSet = new Set(seen);
+  const fresh = matching.filter((e) => !seenSet.has(e.id));
+
+  // Advance state regardless.
+  await env.MEW_STATE.put(key, JSON.stringify(currentIds));
+
+  if (!fresh.length) {
+    console.log("Tonamel " + mon.name + ": no new matches (" + matching.length + " matching total)");
+    return { name: mon.name, matching: matching.length, new: 0 };
+  }
+
+  await sendToLine(env, buildTonamelMessage(mon.name, fresh));
+  console.log("Tonamel " + mon.name + ": alerted " + fresh.length + " new event(s)");
+  return { name: mon.name, new: fresh.length, titles: fresh.map((e) => e.title) };
+}
+
+function matchTitle(title, inc, exc) {
+  const t = (title || "").toLowerCase();
+  if (exc.length && exc.some((k) => t.includes(k))) return false;
+  if (inc.length && !inc.some((k) => t.includes(k))) return false;
+  return true;
+}
+
+async function fetchTonamelCompetitions(orgId, gameId) {
+  const payload = {
+    operationName: "getOrganizationGameCompetitions",
+    variables: {
+      organizationId: orgId,
+      gameId: gameId,
+      filter: { first: 0, last: 20, before: "", after: "" },
+    },
+    query: TONAMEL_QUERY,
+  };
+
+  let resp;
+  try {
+    resp = await fetch(TONAMEL_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "*/*",
+        origin: "https://tonamel.com",
+        referer: "https://tonamel.com/organization/" + orgId + "?game=" + gameId,
+        "x-page-view-id": crypto.randomUUID(),
+        "x-page-view-location": "https://tonamel.com/organization/" + orgId + "?game=" + gameId,
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.log("Tonamel fetch network error: " + err);
+    return null;
+  }
+
+  const bodyText = await resp.text();
+  if (resp.status !== 200) {
+    console.log("Tonamel fetch HTTP " + resp.status + ": " + bodyText.slice(0, 300));
+    return null;
+  }
+
+  let data;
+  try {
+    data = JSON.parse(bodyText);
+  } catch (e) {
+    console.log("Tonamel JSON parse error: " + bodyText.slice(0, 200));
+    return null;
+  }
+  if (data.errors) {
+    console.log("Tonamel GraphQL errors: " + JSON.stringify(data.errors).slice(0, 400));
+  }
+
+  const edges =
+    data && data.data && data.data.organization && data.data.organization.game &&
+    data.data.organization.game.competitions && data.data.organization.game.competitions.edges;
+  if (!Array.isArray(edges)) {
+    console.log("Tonamel: unexpected response shape: " + bodyText.slice(0, 200));
+    return null;
+  }
+
+  return edges
+    .map((edge) => {
+      const n = (edge && edge.node) || {};
+      const menu = (n.entryMenus && n.entryMenus[0]) || null;
+      return {
+        id: n.id,
+        title: n.title || "",
+        status: n.status,
+        publicStatus: n.publicStatus,
+        entrants: menu && menu.countSummary ? menu.countSummary.currentEntrantNum : null,
+        capacity: menu ? menu.participantChosenNum : null,
+      };
+    })
+    .filter((e) => e.id && e.publicStatus === "PUBLIC");
+}
+
+function buildTonamelMessage(monitorName, events) {
+  const header = "🐱 Mew Alert! — new event" + (events.length > 1 ? "s (" + events.length + ")" : "");
+  const lines = [header, "", "📅 " + monitorName, ""];
+  events.slice(0, 10).forEach((e) => {
+    lines.push("🎯 " + truncate(e.title, 200));
+    if (e.entrants != null && e.capacity != null) lines.push("👥 " + e.entrants + "/" + e.capacity);
+    lines.push("🔗 https://tonamel.com/competition/" + e.id);
+    lines.push("");
+  });
+  if (events.length > 10) lines.push("…and " + (events.length - 10) + " more");
+  return truncate(lines.join("\n").trim(), 4900);
 }
 
 // ── Admin page HTML (self-contained; no backticks / ${} inside) ──────────────

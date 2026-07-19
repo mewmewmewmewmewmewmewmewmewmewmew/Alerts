@@ -12,6 +12,10 @@ compatibility_date = "2025-01-01"
 binding = "MEW_STATE"
 id = "043a700a0872448c9d0e03c7cc016196"
 
+# Cron trigger — runs the Tonamel poller (scheduled handler) every 5 minutes.
+[triggers]
+crons = ["*/5 * * * *"]
+
 # LINE_TOKEN, GROUP_ID and ADMIN_PASSWORD are SECRETS — do not put them here.
 # Set them with:
 #   npx wrangler secret put LINE_TOKEN

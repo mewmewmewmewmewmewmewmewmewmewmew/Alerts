@@ -148,6 +148,52 @@ Fields (all optional):
 - **`minChars`** — ignore changes smaller than this many characters.
 - **`enabled`** — set `false` to mute a monitor without deleting it.
 
+## Tonamel poller (scheduled, no Distill needed)
+
+For [Tonamel](https://tonamel.com) organization pages, the Worker queries the
+site's GraphQL API directly on a schedule (cron in `wrangler.toml`, default
+every 5 min) — no browser, no Distill. It gets structured events, filters by
+keyword on the title, and alerts on each **new** matching event with its own
+link and spot count:
+
+```
+🐱 Mew Alert! — new event
+
+📅 晴れる屋2 events @ 秋葉原
+
+🎯 スタートデッキ100対戦会【16時の部】
+👥 29/30
+🔗 https://tonamel.com/competition/PgrEh
+```
+
+Configured under the `tonamel` block in `config.json`:
+
+```json
+"tonamel": {
+  "enabled": true,
+  "monitors": [
+    {
+      "name": "晴れる屋2 events @ 秋葉原",
+      "organizationId": "rmQjT",
+      "gameId": "pokemon_card",
+      "include": ["スタートデッキ", "ボックス開封"],
+      "exclude": ["小学生以下限定"]
+    }
+  ]
+}
+```
+
+- `organizationId` / `gameId` come from the page URL
+  (`tonamel.com/organization/<organizationId>?game=<gameId>`).
+- `include` / `exclude` match against the event **title** (case-insensitive
+  substring). Keyword matching is literal — `ボックス開封` will not match a title
+  written `BOX開封`; add both spellings if you want to catch either.
+- First poll records a silent baseline; after that, only genuinely new matching
+  events alert. State is keyed `tonamel::<organizationId>::<gameId>` in KV.
+
+**Test it without waiting for the cron:** `GET /poll?key=<ADMIN_PASSWORD>` runs
+all Tonamel monitors immediately and returns a JSON summary of what it did.
+
 ## Local development & logs
 
 ```bash
