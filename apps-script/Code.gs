@@ -144,7 +144,9 @@ function readPayload(e) {
 // Diffing
 // ────────────────────────────────────────────────────────────────────────────
 function normalize(s) {
-  return (s || "").replace(/\r/g, "").replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").trim();
+  return (s || "").replace(/\r/g, "").replace(/[ \t]+/g, " ")
+    .split("\n").map(function (l) { return l.trim(); }).join("\n")
+    .replace(/\n{2,}/g, "\n").trim();
 }
 
 function toLines(s) {
@@ -215,7 +217,9 @@ function applyFilters(diff, cfg) {
     if (!matched) { diff.meaningful = false; return diff; }
   }
 
-  var changedChars = diff.added.concat(diff.removed).join("").length;
+  var changedChars = (diff.type === "single")
+    ? lc(diff.newVal).length
+    : diff.added.concat(diff.removed).join("").length;
   var hasChange = (diff.added.length + diff.removed.length) > 0;
   diff.meaningful = hasChange && changedChars >= (cfg.minChars || 1);
   return diff;

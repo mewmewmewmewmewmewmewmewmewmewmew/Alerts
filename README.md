@@ -1,7 +1,7 @@
 # Mew Alerts — Distill.io → LINE relay
 
-A Google Apps Script webhook that turns Distill.io's "something changed" pings
-into **precise, filtered** LINE alerts that tell you *exactly* what changed.
+A **Cloudflare Worker** that turns Distill.io's "something changed" pings into
+**precise, filtered** LINE alerts that tell you *exactly* what changed.
 
 ## Why this exists
 
@@ -10,36 +10,74 @@ Distill's webhook only sends the **current** text of the watched element
 and no diff**. The original relay just reprinted the whole current blob, so you
 couldn't see what changed and every ping became a message.
 
-This version makes the Apps Script remember state and do the work:
+This version makes the Worker the brain: it remembers state and does the work.
 
 | Problem (before)                     | Fix (now)                                             |
 | ------------------------------------ | ----------------------------------------------------- |
-| Dumps the entire current text        | Stores the previous snapshot and shows the **diff**   |
+| Dumps the entire current text        | Stores the previous snapshot (KV) and shows the diff  |
 | Can't tell what changed              | `➕ Added` / `➖ Removed` lines, or `old → new`          |
 | No filtering — every ping alerts     | Include / exclude keywords + min-change threshold     |
 | Repeat pings spam you                | Dedupes identical + whitespace-only changes           |
 | A bare hit to the URL sends an alert | Ignores empty / test hits                             |
 | First-ever ping alerts on nothing    | First ping just records a silent baseline             |
 
-## Setup
+## Architecture
 
-1. Open the Apps Script project (script.google.com or **Extensions → Apps
-   Script** from the bound Sheet) and replace the code with `Code.gs`.
-2. **Project Settings ▸ Script properties** — add:
-   - `LINE_TOKEN` — LINE Messaging API channel access token
-   - `GROUP_ID` — the LINE group/user id to push to
-   - `CONFIG` — *(optional)* JSON filter config, see below
-3. **Deploy ▸ Manage deployments** — keep the existing `/exec` deployment so
-   your current Distill webhook URL keeps working. (Re-deploy a new version
-   after pasting the code.)
-4. In the Apps Script editor, run `resetAllState` once if you want a clean
-   start. The first ping from each monitor after that stores a baseline and
-   sends no alert; subsequent changes are diffed against it.
+```
+Distill (browser ext) ──HTTPS webhook──▶ Cloudflare Worker ──push──▶ LINE
+                                              │
+                                              ├─ KV: previous snapshot per monitor
+                                              └─ config.json: filter rules (in this repo)
+```
 
-## Distill webhook configuration
+Filter rules live in **`config.json`** (committed here, so they're
+version-controlled and editable via pull request). Secrets live in Cloudflare.
 
-Point Distill's **Webhook** action at your `/exec` URL and send these params
-(query params or JSON body both work):
+## Files
+
+| Path                  | What it is                                             |
+| --------------------- | ------------------------------------------------------ |
+| `src/index.js`        | The Worker (payload parsing, diff, filter, LINE push)  |
+| `config.json`         | Filter rules — defaults + per-monitor overrides        |
+| `wrangler.toml`       | Worker config + KV binding                              |
+| `apps-script/Code.gs` | Legacy Google Apps Script version (reference / fallback)|
+
+## One-time setup
+
+You need a free Cloudflare account. Two ways to deploy:
+
+### Option A — Deploy from the CLI (fastest to get running)
+
+```bash
+npm install
+npx wrangler login
+
+# 1. Create the KV namespace, then paste the printed id into wrangler.toml
+npx wrangler kv namespace create MEW_STATE
+
+# 2. Store your LINE secrets (never commit these)
+npx wrangler secret put LINE_TOKEN   # paste your LINE channel access token
+npx wrangler secret put GROUP_ID     # paste your LINE group/user id
+
+# 3. Ship it
+npm run deploy
+```
+
+`wrangler deploy` prints your Worker URL, e.g.
+`https://mew-alerts.<subdomain>.workers.dev` — that's your new webhook URL.
+
+### Option B — Auto-deploy from GitHub (no more copy-paste)
+
+In the Cloudflare dashboard: **Workers & Pages → Create → Connect to Git**,
+pick this repo. Cloudflare runs `wrangler deploy` on every push to the branch.
+Then set the KV namespace + the `LINE_TOKEN` / `GROUP_ID` secrets in
+**Worker → Settings → Variables and Secrets**. After this, every commit here
+deploys itself.
+
+## Point Distill at the new URL
+
+In Distill's **Webhook** action, set the URL to your Worker URL and send these
+params (query params or JSON body both work):
 
 | Param  | Value                  |
 | ------ | ---------------------- |
@@ -48,14 +86,16 @@ Point Distill's **Webhook** action at your `/exec` URL and send these params
 | `uri`  | `{{sieve.uri}}`        |
 | `ts`   | `{{sieve_data.ts}}`    |
 
-> Tip: the more precisely your Distill **selector** targets just the value you
-> care about (a price, a stock label, a list), the cleaner the diff. Broad
-> selectors that grab a whole page produce noisy diffs.
+> The cleaner your Distill **selector** (just the price, just the stock label),
+> the cleaner the diff. Broad selectors that grab a whole page = noisy diffs.
 
-## Filtering (`CONFIG` script property)
+The first ping per monitor records a silent baseline (no alert); every change
+after that is diffed against it.
 
-Optional. A JSON object with a global `default` block and optional per-monitor
-overrides keyed by the exact Distill monitor name.
+## Filtering (`config.json`)
+
+A `default` block plus optional per-monitor overrides keyed by the exact Distill
+monitor name:
 
 ```json
 {
@@ -77,18 +117,25 @@ overrides keyed by the exact Distill monitor name.
 
 Fields (all optional):
 
-- **`include`** — if set, an alert is sent only when a changed line contains one
-  of these keywords (case-insensitive). Use it to alert *only* on the events you
-  care about (e.g. `"in stock"`).
+- **`include`** — if set, alert only when a changed line contains one of these
+  (case-insensitive). Use it to alert *only* on the events you care about.
 - **`exclude`** — changed lines containing any of these are dropped as noise
   before deciding whether to alert.
-- **`minChars`** — ignore changes smaller than this many characters (kills
-  trivial edits).
-- **`enabled`** — set to `false` to mute a monitor without deleting it.
+- **`minChars`** — ignore changes smaller than this many characters.
+- **`enabled`** — set `false` to mute a monitor without deleting it.
 
-## Maintenance
+## Local development & logs
 
-- `resetAllState()` — run from the editor to clear all stored snapshots; each
-  monitor re-baselines on its next ping.
-- Logs: **Executions** tab shows every hit and why it did or didn't alert
-  (`Baseline`, `No change`, `Filtered`, `Sent`, …).
+```bash
+npm run dev     # run the Worker locally (wrangler dev)
+npm run tail    # live-stream production logs (wrangler tail)
+```
+
+Every hit logs why it did or didn't alert: `Baseline`, `No change`,
+`Filtered`, `Sent`, …
+
+## Resetting state
+
+To re-baseline a monitor, delete its KV key (key format `state::<monitor name>`)
+from the Cloudflare dashboard (**Worker → KV**) or via
+`npx wrangler kv key delete --binding MEW_STATE "state::<name>"`.

@@ -1,0 +1,19 @@
+# Cloudflare Worker config for Mew Alerts.
+# Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+
+name = "mew-alerts"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# KV namespace that stores the previous snapshot per monitor.
+# Create it once:  npx wrangler kv namespace create MEW_STATE
+# then paste the returned id below (replace REPLACE_WITH_KV_NAMESPACE_ID).
+[[kv_namespaces]]
+binding = "MEW_STATE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# LINE_TOKEN and GROUP_ID are SECRETS — do not put them here.
+# Set them with:
+#   npx wrangler secret put LINE_TOKEN
+#   npx wrangler secret put GROUP_ID
+# (or in the Cloudflare dashboard: Worker ▸ Settings ▸ Variables and Secrets)

@@ -1,0 +1,9 @@
+{
+  "default": {
+    "include": [],
+    "exclude": [],
+    "minChars": 1,
+    "enabled": true
+  },
+  "monitors": {}
+}

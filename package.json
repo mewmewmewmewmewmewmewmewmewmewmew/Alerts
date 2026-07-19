@@ -1,0 +1,14 @@
+{
+  "name": "mew-alerts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Distill.io -> LINE relay with diffing and filtering (Cloudflare Worker)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}
