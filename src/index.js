@@ -27,6 +27,7 @@ const DEFAULTS = { include: [], exclude: [], minChars: 1, enabled: true };
 const CONFIG_KEY = "config::override";
 const STATE_PREFIX = "state::";
 const LINK_DELIM = " ||| "; // separates title and url in a linked capture
+const LINKED_PREFIX = "linked::";
 
 export default {
   async fetch(request, env) {
@@ -316,7 +317,7 @@ async function handleLinkedWebhook(env, name, body, cfg) {
   const exc = (cfg.exclude || []).map(lc);
   const matching = items.filter((it) => matchTitle(it.title, inc, exc));
 
-  const key = "linked::" + name;
+  const key = LINKED_PREFIX + name;
   const raw = await env.MEW_STATE.get(key);
   const currentUrls = matching.map((it) => it.url);
 
@@ -448,18 +449,20 @@ async function handleAdmin(request, env, url) {
 }
 
 async function listMonitors(env) {
-  const names = [];
-  let cursor;
+  const names = new Set();
   try {
-    do {
-      const res = await env.MEW_STATE.list({ prefix: STATE_PREFIX, cursor });
-      for (const k of res.keys) names.push(k.name.slice(STATE_PREFIX.length));
-      cursor = res.list_complete ? undefined : res.cursor;
-    } while (cursor);
+    for (const prefix of [STATE_PREFIX, LINKED_PREFIX]) {
+      let cursor;
+      do {
+        const res = await env.MEW_STATE.list({ prefix, cursor });
+        for (const k of res.keys) names.add(k.name.slice(prefix.length));
+        cursor = res.list_complete ? undefined : res.cursor;
+      } while (cursor);
+    }
   } catch (err) {
     console.log("listMonitors error: " + err);
   }
-  return names.sort();
+  return Array.from(names).sort();
 }
 
 function sanitizeBlock(b) {
