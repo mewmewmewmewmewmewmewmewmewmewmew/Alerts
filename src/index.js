@@ -185,20 +185,41 @@ function applyFilters(diff, cfg) {
   const exclude = (cfg.exclude || []).map(lc);
   const include = (cfg.include || []).map(lc);
 
-  const keep = (line) => {
+  const notExcluded = (line) => {
+    if (!exclude.length) return true;
     const L = lc(line);
-    if (exclude.length && exclude.some((k) => L.includes(k))) return false;
-    return true;
+    return !exclude.some((k) => L.includes(k));
+  };
+  const matchesInclude = (line) => {
+    const L = lc(line);
+    return include.some((k) => L.includes(k));
   };
 
-  diff.added = (diff.added || []).filter(keep);
-  diff.removed = (diff.removed || []).filter(keep);
+  diff.added = (diff.added || []).filter(notExcluded);
+  diff.removed = (diff.removed || []).filter(notExcluded);
 
-  if (include.length) {
-    const pool = diff.added.concat(diff.removed).map(lc).join("\n");
-    if (!include.some((k) => pool.includes(k))) {
+  // A single value that itself contains an excluded keyword is dropped too.
+  if (diff.type === "single" && exclude.length) {
+    if (exclude.some((k) => lc(diff.newVal).includes(k))) {
       diff.meaningful = false;
       return diff;
+    }
+  }
+
+  if (include.length) {
+    if (diff.type === "single") {
+      // Single value: gate on the value matching, keep the old → new display.
+      const hay = lc(diff.newVal) + "\n" + lc(diff.oldVal);
+      if (!include.some((k) => hay.includes(k))) {
+        diff.meaningful = false;
+        return diff;
+      }
+    } else {
+      // List: show ONLY the added lines that match (the "hits"); drop the
+      // noisy removed dump. An alert fires only when a matching line appears.
+      diff.added = diff.added.filter(matchesInclude);
+      diff.removed = [];
+      diff.matched = true;
     }
   }
 
@@ -225,7 +246,7 @@ function buildMessage(name, uri, ts, diff) {
     lines.push(truncate(diff.oldVal, 300) + "  →  " + truncate(diff.newVal, 300));
   } else {
     if (diff.added.length) {
-      lines.push("➕ Added (" + diff.added.length + ")");
+      lines.push((diff.matched ? "🎯 Matches (" : "➕ Added (") + diff.added.length + ")");
       diff.added.slice(0, 15).forEach((l) => lines.push("• " + truncate(l, 200)));
       if (diff.added.length > 15) lines.push("…and " + (diff.added.length - 15) + " more");
       lines.push("");
@@ -437,8 +458,10 @@ const ADMIN_HTML =
 '<div class="add"><input id="pw" type="password" placeholder="Admin password" autocomplete="current-password">' +
 '<button onclick="load()">Load</button><span id="status" class="muted"></span></div>' +
 '<div id="app" style="display:none">' +
-'<p class="muted">“Alert ONLY if contains” = comma-separated keywords; leave blank to allow all. ' +
-'“Ignore if contains” drops noisy lines. Min change = ignore edits smaller than N characters.</p>' +
+'<p class="muted">“Alert ONLY if contains” = comma-separated keywords. When set, the alert fires ' +
+'only when a NEW line contains one of them, and shows ONLY those matching lines (plus the link) — ' +
+'no giant dump. Leave blank to show the full diff. “Ignore if contains” drops noisy lines. ' +
+'Min change = ignore edits smaller than N characters.</p>' +
 '<div id="blocks"></div>' +
 '<h2>Add monitor override</h2>' +
 '<div class="add"><select id="detected"></select><input id="newname" type="text" placeholder="or type a monitor name">' +
