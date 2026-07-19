@@ -5,9 +5,15 @@
     "minChars": 1,
     "enabled": true
   },
-  "monitors": {},
+  "monitors": {
+    "晴れる屋2 events @ 秋葉原": {
+      "include": ["スタートデッキ", "ボックス開封"],
+      "exclude": ["小学生以下限定"]
+    }
+  },
   "tonamel": {
-    "enabled": true,
+    "_comment": "Direct GraphQL poller is blocked by tonamel's edge (403 to non-browser IPs). Kept disabled; the Distill JavaScript-selector -> linked-webhook path is used instead.",
+    "enabled": false,
     "monitors": [
       {
         "name": "晴れる屋2 events @ 秋葉原",

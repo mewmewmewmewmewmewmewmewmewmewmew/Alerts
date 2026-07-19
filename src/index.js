@@ -26,6 +26,7 @@ import seedConfig from "../config.json";
 const DEFAULTS = { include: [], exclude: [], minChars: 1, enabled: true };
 const CONFIG_KEY = "config::override";
 const STATE_PREFIX = "state::";
+const LINK_DELIM = " ||| "; // separates title and url in a linked capture
 
 export default {
   async fetch(request, env) {
@@ -62,6 +63,12 @@ async function handleWebhook(request, env) {
     const cfgAll = await loadConfig(env);
     const cfg = pickMonitorConfig(cfgAll, name);
     if (cfg.enabled === false) return text("Muted");
+
+    // Linked format: a Distill JavaScript selector emitting "title ||| url" per
+    // line. Parse into items, filter by title, alert new ones with their link.
+    if (body.includes(LINK_DELIM)) {
+      return handleLinkedWebhook(env, name, body, cfg);
+    }
 
     const key = STATE_PREFIX + name;
     const oldText = await env.MEW_STATE.get(key);
@@ -273,6 +280,62 @@ function buildMessage(name, uri, ts, diff) {
 function truncate(s, n) {
   s = (s || "").toString();
   return s.length > n ? s.substring(0, n - 1) + "…" : s;
+}
+
+// ── Linked capture (title ||| url pairs from a Distill JS selector) ──────────
+function parseLinkedItems(body) {
+  return (body || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const idx = line.indexOf(LINK_DELIM);
+      if (idx === -1) return null;
+      const title = line.slice(0, idx).trim();
+      const url = line.slice(idx + LINK_DELIM.length).trim();
+      if (!title || !url) return null;
+      return { title, url };
+    })
+    .filter(Boolean);
+}
+
+async function handleLinkedWebhook(env, name, body, cfg) {
+  const items = parseLinkedItems(body);
+  const inc = (cfg.include || []).map(lc);
+  const exc = (cfg.exclude || []).map(lc);
+  const matching = items.filter((it) => matchTitle(it.title, inc, exc));
+
+  const key = "linked::" + name;
+  const raw = await env.MEW_STATE.get(key);
+  const currentUrls = matching.map((it) => it.url);
+
+  // First sight: silent baseline.
+  if (raw === null) {
+    await env.MEW_STATE.put(key, JSON.stringify(currentUrls));
+    return text("Baseline");
+  }
+
+  let seen = [];
+  try { seen = JSON.parse(raw) || []; } catch (e) { seen = []; }
+  const seenSet = new Set(seen);
+  const fresh = matching.filter((it) => !seenSet.has(it.url));
+
+  await env.MEW_STATE.put(key, JSON.stringify(currentUrls));
+
+  if (!fresh.length) return text("No new");
+
+  await sendToLine(env, buildLinkedMessage(name, fresh));
+  return text("Sent " + fresh.length);
+}
+
+function buildLinkedMessage(name, items) {
+  const header = "🐱 Mew Alert! — new event" + (items.length > 1 ? "s (" + items.length + ")" : "");
+  const lines = [header, "", "📅 " + name, ""];
+  items.slice(0, 10).forEach((it) => {
+    lines.push("🎯 " + truncate(it.title, 200));
+    lines.push("🔗 " + it.url);
+    lines.push("");
+  });
+  if (items.length > 10) lines.push("…and " + (items.length - 10) + " more");
+  return truncate(lines.join("\n").trim(), 4900);
 }
 
 // ── LINE delivery ───────────────────────────────────────────────────────────

@@ -148,13 +148,46 @@ Fields (all optional):
 - **`minChars`** — ignore changes smaller than this many characters.
 - **`enabled`** — set `false` to mute a monitor without deleting it.
 
-## Tonamel poller (scheduled, no Distill needed)
+## Linked capture — per-event links via a Distill JS selector (recommended)
 
-For [Tonamel](https://tonamel.com) organization pages, the Worker queries the
-site's GraphQL API directly on a schedule (cron in `wrangler.toml`, default
-every 5 min) — no browser, no Distill. It gets structured events, filters by
-keyword on the title, and alerts on each **new** matching event with its own
-link and spot count:
+Tonamel's page is a JS-rendered SPA and its GraphQL API returns **403 to
+non-browser IPs** (so the scheduled poller below can't reach it from Cloudflare).
+The robust workaround runs the fetch where it already works — your browser —
+using a Distill **JavaScript selector** that emits `title ||| url` per line:
+
+```js
+Array.from(document.querySelectorAll('li.competition-item a.nuxt-link')).map(function (a) {
+  var t = a.querySelector('.title');
+  return (t ? t.textContent.trim() : a.textContent.trim().split('\n')[0]) + ' ||| ' + a.href;
+}).join('\n')
+```
+
+Distill posts that to the Worker like any other monitor. When the Worker sees
+the ` ||| ` delimiter it parses each line into `{title, url}`, filters titles by
+the monitor's `include`/`exclude` (from `config.json` / the admin page), diffs
+new URLs against a `linked::<monitor name>` KV baseline, and alerts on each new
+matching event **with its own link**:
+
+```
+🐱 Mew Alert! — new event
+
+📅 晴れる屋2 events @ 秋葉原
+
+🎯 スタートデッキ100対戦会【16時の部】
+🔗 https://tonamel.com/competition/PgrEh
+```
+
+## Tonamel poller (scheduled GraphQL — parked)
+
+> ⚠️ Disabled by default (`tonamel.enabled: false`): tonamel's edge returns a
+> 403 to server-side callers, so this path only works from an allowed IP (e.g.
+> via a residential proxy). Kept for reference / future use. The linked-capture
+> path above is what's actually in use.
+
+For sites whose API *is* reachable, the Worker can query GraphQL directly on a
+schedule (cron in `wrangler.toml`, default every 5 min), filter by keyword on
+the title, and alert on each **new** matching event with its own link and spot
+count:
 
 ```
 🐱 Mew Alert! — new event
