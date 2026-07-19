@@ -1,20 +1,11 @@
 {
   "default": {
-    "include": [],
-    "exclude": [],
+    "include": ["スタートデッキ", "開封"],
+    "exclude": ["小学生以下限定"],
     "minChars": 1,
     "enabled": true
   },
-  "monitors": {
-    "晴れる屋2 events @ 秋葉原": {
-      "include": ["スタートデッキ", "ボックス開封"],
-      "exclude": ["小学生以下限定"]
-    },
-    "晴れる屋2 events @ 高田馬場": {
-      "include": ["スタートデッキ", "ボックス開封"],
-      "exclude": ["小学生以下限定"]
-    }
-  },
+  "monitors": {},
   "tonamel": {
     "_comment": "Direct GraphQL poller is blocked by tonamel's edge (403 to non-browser IPs). Kept disabled; the Distill JavaScript-selector -> linked-webhook path is used instead.",
     "enabled": false,
