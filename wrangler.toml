@@ -10,7 +10,7 @@ compatibility_date = "2025-01-01"
 # then paste the returned id below (replace REPLACE_WITH_KV_NAMESPACE_ID).
 [[kv_namespaces]]
 binding = "MEW_STATE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "043a700a0872448c9d0e03c7cc016196"
 
 # LINE_TOKEN, GROUP_ID and ADMIN_PASSWORD are SECRETS — do not put them here.
 # Set them with:
