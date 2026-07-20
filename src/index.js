@@ -319,21 +319,24 @@ async function handleLinkedWebhook(env, name, body, cfg) {
 
   const key = LINKED_PREFIX + name;
   const raw = await env.MEW_STATE.get(key);
-  const currentUrls = matching.map((it) => it.url);
+  const isBaseline = raw === null;
 
-  // First sight: silent baseline.
-  if (raw === null) {
-    await env.MEW_STATE.put(key, JSON.stringify(currentUrls));
-    return text("Baseline");
+  let seenSet = new Set();
+  if (!isBaseline) {
+    try { seenSet = new Set(JSON.parse(raw) || []); } catch (e) { seenSet = new Set(); }
   }
 
-  let seen = [];
-  try { seen = JSON.parse(raw) || []; } catch (e) { seen = []; }
-  const seenSet = new Set(seen);
   const fresh = matching.filter((it) => !seenSet.has(it.url));
 
-  await env.MEW_STATE.put(key, JSON.stringify(currentUrls));
+  // Accumulate seen URLs — never shrink. A flaky/partial capture (the cloud
+  // render is timing-sensitive, and the API window is "last 20") must not make
+  // an event that dropped out and came back look new again. Cap to bound size.
+  for (const it of matching) seenSet.add(it.url);
+  let merged = Array.from(seenSet);
+  if (merged.length > 5000) merged = merged.slice(merged.length - 5000);
+  await env.MEW_STATE.put(key, JSON.stringify(merged));
 
+  if (isBaseline) return text("Baseline");
   if (!fresh.length) return text("No new");
 
   await sendToLine(env, buildLinkedMessage(name, fresh));
