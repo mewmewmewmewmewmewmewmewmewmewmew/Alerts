@@ -283,17 +283,18 @@ function truncate(s, n) {
   return s.length > n ? s.substring(0, n - 1) + "…" : s;
 }
 
-// ── Linked capture (title ||| url pairs from a Distill JS selector) ──────────
+// ── Linked capture (title ||| url [||| date] lines from a Distill JS selector)
 function parseLinkedItems(body) {
   return (body || "")
     .split(/\r?\n/)
     .map((line) => {
-      const idx = line.indexOf(LINK_DELIM);
-      if (idx === -1) return null;
-      const title = line.slice(0, idx).trim();
-      const url = line.slice(idx + LINK_DELIM.length).trim();
+      if (!line.includes(LINK_DELIM)) return null;
+      const parts = line.split(LINK_DELIM).map((p) => p.trim());
+      const title = parts[0];
+      const url = parts[1];
+      const date = parts[2] || "";
       if (!title || !url) return null;
-      return { title, url };
+      return { title, url, date };
     })
     .filter(Boolean);
 }
@@ -348,6 +349,7 @@ function buildLinkedMessage(name, items) {
   const lines = [header, "", "📅 " + name, ""];
   items.slice(0, 10).forEach((it) => {
     lines.push("🎯 " + truncate(it.title, 200));
+    if (it.date) lines.push("🗓 " + truncate(it.date, 100));
     lines.push("🔗 " + it.url);
     lines.push("");
   });
