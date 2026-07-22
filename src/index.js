@@ -28,6 +28,7 @@ const CONFIG_KEY = "config::override";
 const STATE_PREFIX = "state::";
 const LINK_DELIM = " ||| "; // separates title and url in a linked capture
 const LINKED_PREFIX = "linked::";
+const DIAG_KEY = "diag::recent"; // ring buffer of recent webhook decisions
 
 export default {
   async fetch(request, env) {
@@ -86,9 +87,17 @@ async function handleWebhook(request, env) {
 
     await env.MEW_STATE.put(key, cap(body)); // advance state even if filtered
 
-    if (!diff.meaningful) return text("Filtered");
+    if (!diff.meaningful) {
+      await logDecision(env, name, "Filtered (diff below threshold / no keyword match)");
+      return text("Filtered");
+    }
 
-    await sendToLine(env, buildMessage(name, uri, ts, diff));
+    const send = await sendToLine(env, buildMessage(name, uri, ts, diff));
+    if (!send.ok) {
+      await logDecision(env, name, "LINE FAILED (" + send.status + "): " + send.detail);
+      return text("LINE failed", 502);
+    }
+    await logDecision(env, name, "Sent (diff alert)");
     return text("Sent");
   } catch (err) {
     console.log("Webhook error: " + (err && err.stack ? err.stack : err));
@@ -332,15 +341,36 @@ async function handleLinkedWebhook(env, name, body, cfg) {
   // Accumulate seen URLs — never shrink. A flaky/partial capture (the cloud
   // render is timing-sensitive, and the API window is "last 20") must not make
   // an event that dropped out and came back look new again. Cap to bound size.
-  for (const it of matching) seenSet.add(it.url);
-  let merged = Array.from(seenSet);
-  if (merged.length > 5000) merged = merged.slice(merged.length - 5000);
-  await env.MEW_STATE.put(key, JSON.stringify(merged));
+  const persistSeen = async () => {
+    for (const it of matching) seenSet.add(it.url);
+    let merged = Array.from(seenSet);
+    if (merged.length > 5000) merged = merged.slice(merged.length - 5000);
+    await env.MEW_STATE.put(key, JSON.stringify(merged));
+  };
 
-  if (isBaseline) return text("Baseline");
-  if (!fresh.length) return text("No new");
+  if (isBaseline) {
+    await persistSeen();
+    await logDecision(env, name, "Baseline (" + matching.length + " matching of " + items.length + ")");
+    return text("Baseline");
+  }
 
-  await sendToLine(env, buildLinkedMessage(name, fresh));
+  if (!fresh.length) {
+    await logDecision(env, name, "No new (" + matching.length + " matching of " + items.length + ")");
+    return text("No new");
+  }
+
+  // Send FIRST; only mark events as seen if LINE accepted the message.
+  // A failed push (e.g. 429 monthly quota) leaves them unseen so the next
+  // check retries instead of silently losing the alert forever.
+  const send = await sendToLine(env, buildLinkedMessage(name, fresh));
+  if (!send.ok) {
+    await logDecision(env, name,
+      "LINE FAILED (" + send.status + ") for " + fresh.length + " new: " + send.detail + " — will retry next check");
+    return text("LINE failed", 502);
+  }
+
+  await persistSeen();
+  await logDecision(env, name, "Sent " + fresh.length + ": " + fresh.map((it) => it.title).join(" / ").slice(0, 300));
   return text("Sent " + fresh.length);
 }
 
@@ -361,18 +391,40 @@ function buildLinkedMessage(name, items) {
 async function sendToLine(env, messageText) {
   if (!env.LINE_TOKEN || !env.GROUP_ID) {
     console.log("Missing LINE_TOKEN or GROUP_ID — cannot send.");
-    return;
+    return { ok: false, status: 0, detail: "missing LINE_TOKEN or GROUP_ID" };
   }
-  const resp = await fetch("https://api.line.me/v2/bot/message/push", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + env.LINE_TOKEN,
-    },
-    body: JSON.stringify({ to: env.GROUP_ID, messages: [{ type: "text", text: messageText }] }),
-  });
+  let resp;
+  try {
+    resp = await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + env.LINE_TOKEN,
+      },
+      body: JSON.stringify({ to: env.GROUP_ID, messages: [{ type: "text", text: messageText }] }),
+    });
+  } catch (err) {
+    console.log("LINE push network error: " + err);
+    return { ok: false, status: 0, detail: "network: " + err };
+  }
   if (resp.status !== 200) {
-    console.log("LINE push failed (" + resp.status + "): " + (await resp.text()));
+    const body = (await resp.text()).slice(0, 300);
+    console.log("LINE push failed (" + resp.status + "): " + body);
+    return { ok: false, status: resp.status, detail: body };
+  }
+  return { ok: true, status: 200, detail: "" };
+}
+
+// ── Diagnostics: ring buffer of recent decisions, readable at /admin/health ──
+async function logDecision(env, name, msg) {
+  try {
+    let list = [];
+    try { list = JSON.parse((await env.MEW_STATE.get(DIAG_KEY)) || "[]"); } catch (e) { list = []; }
+    list.unshift({ at: new Date().toISOString(), name: name, msg: msg });
+    if (list.length > 50) list = list.slice(0, 50);
+    await env.MEW_STATE.put(DIAG_KEY, JSON.stringify(list));
+  } catch (err) {
+    console.log("logDecision error: " + err);
   }
 }
 
@@ -435,6 +487,12 @@ async function handleAdmin(request, env, url) {
     const config = await loadConfig(env);
     const monitors = await listMonitors(env);
     return json({ config, monitors });
+  }
+
+  if (request.method === "GET" && sub === "/health") {
+    let recent = [];
+    try { recent = JSON.parse((await env.MEW_STATE.get(DIAG_KEY)) || "[]"); } catch (e) { recent = []; }
+    return json({ recent });
   }
 
   if (request.method === "POST" && sub === "/save") {
