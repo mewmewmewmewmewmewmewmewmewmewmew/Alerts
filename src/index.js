@@ -935,13 +935,14 @@ async function handleLineWebhook(request, env) {
     if (!urls.length) continue;
 
     const note = txt.replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim();
+    const deadline = parseDeadline(note); // e.g. "締切7/26" / "8月2日" → ISO date
     let custom = [];
     try { custom = JSON.parse((await env.MEW_STATE.get(EVENTS_CUSTOM_KEY)) || "[]"); } catch (e) { custom = []; }
     let added = 0;
     const now = new Date().toISOString();
     for (const u of urls) {
       if (custom.some((e) => e.url === u)) continue;
-      custom.push({ title: note || u, url: u, date: "", addedAt: now, custom: true });
+      custom.push({ title: note || u, url: u, date: deadline || "", addedAt: now, custom: true });
       added++;
     }
     if (custom.length > 500) custom = custom.slice(custom.length - 500);
@@ -956,6 +957,27 @@ async function handleLineWebhook(request, env) {
     }
   }
   return text("OK");
+}
+
+// Pull a deadline out of a pinned message's note: "2026/8/2", "8/2", "8月2日".
+// Year is inferred (rolls to next year if the date passed >45 days ago).
+function parseDeadline(text) {
+  if (!text) return null;
+  let y = null, mo, d;
+  let m = text.match(/(20\d{2})[\/\-年]\s*(\d{1,2})[\/\-月]\s*(\d{1,2})/);
+  if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+  else {
+    m = text.match(/(\d{1,2})\s*[\/月]\s*(\d{1,2})/);
+    if (!m) return null;
+    mo = +m[1]; d = +m[2];
+  }
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  if (y == null) {
+    const now = new Date();
+    y = now.getFullYear();
+    if (new Date(y, mo - 1, d).getTime() < now.getTime() - 45 * 86400000) y++;
+  }
+  return y + "-" + String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
 }
 
 async function verifyLineSignature(secret, body, signature) {
@@ -1014,18 +1036,27 @@ const EVENTS_HTML =
 'letter-spacing:0.08em;border:1px solid var(--grey-200);border-radius:2px;padding:2px 6px;' +
 'white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis}' +
 '.pin{flex:0 0 auto;font-size:11px}' +
-'.mk{flex:0 0 auto;display:flex;gap:10px}' +
+'.ad{flex:0 0 44px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
+'.mk{flex:0 0 66px;display:flex;gap:10px}' +
 '.mk label{font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);cursor:pointer;' +
 'user-select:none;display:flex;align-items:center;gap:3px}' +
 'input[type=checkbox]{width:14px;height:14px;accent-color:var(--pink-700);cursor:pointer;margin:0}' +
-'.del{flex:0 0 auto;background:none;border:0;color:var(--grey-400);cursor:pointer;font-size:11px;padding:0 2px}' +
+'.x{flex:0 0 14px;text-align:center}' +
+'.del{background:none;border:0;color:var(--grey-400);cursor:pointer;font-size:11px;padding:0}' +
 '.del:hover{color:var(--pink-800)}' +
+'.hdr{display:flex;align-items:center;gap:10px;padding:4px 6px;border-bottom:1px solid var(--grey-300)}' +
+'.hdr span{font-family:var(--font-body);font-size:9px;font-weight:500;color:var(--grey-500);' +
+'text-transform:uppercase;letter-spacing:0.14em}' +
+'.hdr .s{border:0;padding:0;max-width:none}' +
 'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
 'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
 '#status{color:var(--grey-500);font-size:11px}' +
 '@media(max-width:520px){.s{display:none}.d{flex-basis:56px}}' +
 '</style></head><body>' +
 '<h1>Mew Events</h1><div class="rule"></div><p id="status">Loading\\u2026</p>' +
+'<div class="hdr" id="hdr" style="display:none">' +
+'<span class="d">Date \\u30fb \\u3006</span><span class="t">Event</span>' +
+'<span class="s">Store</span><span class="ad">Added</span><span class="mk">K \\u30fb R</span><span class="x"></span></div>' +
 '<div id="root"></div><div id="oldwrap"></div><script>' +
 'var MARKS={};var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
 'function mk(tag,cls,txt){var el=document.createElement(tag);if(cls)el.className=cls;if(txt!=null)el.textContent=txt;return el}' +
@@ -1039,27 +1070,35 @@ const EVENTS_HTML =
 '.then(function(r){if(!r.ok){c.checked=!v;alert("save failed")}else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
 '.catch(function(){c.checked=!v;alert("save failed")})};' +
 'l.appendChild(c);l.appendChild(document.createTextNode(who));return l}' +
+'function fmtShort(iso){if(!iso)return "\\u2014";var t=Date.parse(iso);if(isNaN(t))return "\\u2014";' +
+'var d=new Date(t);return (d.getMonth()+1)+"/"+d.getDate()}' +
 'function row(e){var r=mk("div","row"+(e.matched?" matched":""));' +
-'r.appendChild(mk("span","d",fmtDate(e.when)));' +
+'r.appendChild(mk("span","d",(e.deadline?"\\u3006 ":"")+fmtDate(e.when)));' +
 'if(e.custom)r.appendChild(mk("span","pin","\\ud83d\\udccc"));' +
 'var t=mk("span","t");var a=document.createElement("a");a.href=e.url;a.textContent=e.title;' +
 'a.target="_blank";a.rel="noopener";a.title=e.title;t.appendChild(a);r.appendChild(t);' +
 'if(e.store)r.appendChild(mk("span","s",shortStore(e.store)));' +
+'r.appendChild(mk("span","ad",fmtShort(e.added)));' +
 'var m=mk("span","mk");m.appendChild(box(e.url,"K"));m.appendChild(box(e.url,"R"));r.appendChild(m);' +
+'var xs=mk("span","x");' +
 'if(e.custom){var x=mk("button","del","\\u2715");' +
 'x.onclick=function(){var pw=prompt("Admin password to remove:");if(!pw)return;' +
 'fetch("/events/remove?pw="+encodeURIComponent(pw)+"&url="+encodeURIComponent(e.url))' +
-'.then(function(r2){if(r2.ok)r.remove();else alert("unauthorized")})};r.appendChild(x)}' +
+'.then(function(r2){if(r2.ok)r.remove();else alert("unauthorized")})};xs.appendChild(x)}' +
+'r.appendChild(xs);' +
 'return r}' +
 'fetch("/events/data").then(function(r){return r.json()}).then(function(data){' +
 'MARKS=data.marks||{};var items=[];' +
-'(data.custom||[]).forEach(function(e){e.when=Date.parse(e.addedAt)||Date.now();items.push(e)});' +
+'(data.custom||[]).forEach(function(e){var w=parseWhen(e.date);e.deadline=(w!=null);' +
+'e.when=(w!=null)?w:(Date.parse(e.addedAt)||Date.now());e.added=e.addedAt;items.push(e)});' +
 'Object.keys(data.stores||{}).forEach(function(n){(data.stores[n]||[]).forEach(function(e){' +
-'e.store=n;var w=parseWhen(e.date);e.when=(w!=null)?w:(Date.parse(e.firstSeen)||0);items.push(e)})});' +
+'e.store=n;var w=parseWhen(e.date);e.when=(w!=null)?w:(Date.parse(e.firstSeen)||0);' +
+'e.added=e.firstSeen;items.push(e)})});' +
 'var cutoff=Date.now()-60*86400000;' +
 'var recent=items.filter(function(e){return e.when>=cutoff}).sort(function(a,b){return a.when-b.when});' +
 'var old=items.filter(function(e){return e.when<cutoff}).sort(function(a,b){return b.when-a.when});' +
 'var root=document.getElementById("root");recent.forEach(function(e){root.appendChild(row(e))});' +
+'if(recent.length||old.length)document.getElementById("hdr").style.display="flex";' +
 'if(old.length){var det=document.createElement("details");' +
 'det.appendChild(mk("summary",null,"\\ud83d\\uddc4 Older than 2 months ("+old.length+")"));' +
 'old.forEach(function(e){det.appendChild(row(e))});document.getElementById("oldwrap").appendChild(det)}' +
