@@ -44,6 +44,7 @@ export default {
     if (url.pathname === "/events") return html(EVENTS_HTML);
     if (url.pathname === "/events/data") return handleEventsData(env);
     if (url.pathname === "/events/remove") return handleEventsRemove(request, env, url);
+    if (url.pathname === "/events/mark") return handleEventsMark(request, env, url);
     // LINE webhook: paste a link in the chat -> pinned to the event board.
     if (url.pathname === "/line") return handleLineWebhook(request, env);
     return handleWebhook(request, env);
@@ -827,6 +828,7 @@ function buildTonamelMessage(monitorName, events) {
 // ════════════════════════════════════════════════════════════════════════════
 const EVENTS_STORE_PREFIX = "events::store::";
 const EVENTS_CUSTOM_KEY = "events::custom";
+const MARKS_KEY = "events::marks"; // { [eventUrl]: {K: bool, R: bool} } — shared entered-state
 
 async function upsertStoreEvents(env, name, items, matchingUrls) {
   try {
@@ -874,7 +876,30 @@ async function handleEventsData(env) {
   }
   let custom = [];
   try { custom = JSON.parse((await env.MEW_STATE.get(EVENTS_CUSTOM_KEY)) || "[]"); } catch (e) { custom = []; }
-  return json({ custom, stores });
+  let marks = {};
+  try { marks = JSON.parse((await env.MEW_STATE.get(MARKS_KEY)) || "{}"); } catch (e) { marks = {}; }
+  return json({ custom, stores, marks });
+}
+
+// Toggle K/R "entered" checkmarks — shared state in KV so both people see it.
+async function handleEventsMark(request, env, url) {
+  const target = url.searchParams.get("url") || "";
+  const who = url.searchParams.get("who") || "";
+  const val = url.searchParams.get("val") === "1";
+  if (!target || (who !== "K" && who !== "R")) return json({ error: "bad params" }, 400);
+
+  let marks = {};
+  try { marks = JSON.parse((await env.MEW_STATE.get(MARKS_KEY)) || "{}"); } catch (e) { marks = {}; }
+  const m = marks[target] || {};
+  m[who] = val;
+  marks[target] = m;
+
+  // Bound growth: drop oldest entries beyond 1000 urls.
+  const keys = Object.keys(marks);
+  if (keys.length > 1000) for (const k of keys.slice(0, keys.length - 1000)) delete marks[k];
+
+  await env.MEW_STATE.put(MARKS_KEY, JSON.stringify(marks));
+  return json({ ok: true, url: target, marks: m });
 }
 
 async function handleEventsRemove(request, env, url) {
@@ -960,44 +985,68 @@ async function lineReply(env, replyToken, messageText) {
   }
 }
 
-// ── Event board HTML (public, read-only; custom-event delete needs password) ─
+// ── Event board HTML: one list sorted by date (event date, or date pinned),
+//    events older than 2 months collapsed, shared K/R entered-checkmarks. ────
 const EVENTS_HTML =
 '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
 '<meta name="viewport" content="width=device-width,initial-scale=1">' +
 '<title>Mew Events</title><style>' +
 '*{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;' +
 'max-width:720px;margin:0 auto;padding:16px;background:#0f1115;color:#e6e6e6}' +
-'h1{font-size:22px}h2{font-size:15px;margin:20px 0 8px;color:#a9b1bd}' +
+'h1{font-size:22px}' +
 '.card{border:1px solid #2a2e37;border-radius:10px;padding:10px 12px;margin:8px 0;background:#161a22}' +
 '.card.matched{border-color:#3b82f6}.title{font-weight:600;word-break:break-word}' +
 '.meta{font-size:12px;color:#8a93a2;margin-top:4px}a{color:#7ab5ff;word-break:break-all}' +
 '.pill{display:inline-block;font-size:11px;border-radius:99px;padding:1px 8px;margin-left:6px;vertical-align:middle}' +
 '.pill.m{background:#1d3a6b;color:#9cc3ff}.pill.c{background:#5b3a1d;color:#ffc99c}' +
 '.del{float:right;background:none;border:0;color:#8a93a2;cursor:pointer;font-size:14px}' +
+'.marks{margin-top:8px;display:flex;gap:18px}.mark{font-size:14px;color:#c6cbd4;cursor:pointer;user-select:none}' +
+'input[type=checkbox]{width:17px;height:17px;accent-color:#3b82f6;vertical-align:middle;cursor:pointer}' +
+'details{margin-top:24px}summary{cursor:pointer;color:#a9b1bd;font-size:15px}' +
 '#status{color:#8a93a2;font-size:13px}</style></head><body>' +
-'<h1>🐱 Mew Events</h1><p id="status">Loading…</p><div id="root"></div><script>' +
-'function card(e){var d=document.createElement("div");d.className="card"+(e.matched?" matched":"");' +
-'var t=document.createElement("div");t.className="title";t.textContent=e.title;' +
-'if(e.matched){var p=document.createElement("span");p.className="pill m";p.textContent="match";t.appendChild(p)}' +
-'if(e.custom){var p2=document.createElement("span");p2.className="pill c";p2.textContent="pinned";t.appendChild(p2);' +
-'var x=document.createElement("button");x.className="del";x.textContent="✕";' +
+'<h1>🐱 Mew Events</h1><p id="status">Loading…</p><div id="root"></div><div id="oldwrap"></div><script>' +
+'var MARKS={};' +
+'function mk(tag,cls,txt){var el=document.createElement(tag);if(cls)el.className=cls;if(txt!=null)el.textContent=txt;return el}' +
+'function pill(k,txt){return mk("span","pill "+k,txt)}' +
+'function parseWhen(s){if(!s)return null;var t=Date.parse(String(s).split("\\u30fb")[0].trim());return isNaN(t)?null:t}' +
+'function box(u,who){var l=mk("label","mark");var c=document.createElement("input");c.type="checkbox";' +
+'c.checked=!!(MARKS[u]&&MARKS[u][who]);' +
+'c.onchange=function(){var v=c.checked;' +
+'fetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+(v?"1":"0"))' +
+'.then(function(r){if(!r.ok){c.checked=!v;alert("save failed")}else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
+'.catch(function(){c.checked=!v;alert("save failed")})};' +
+'l.appendChild(c);l.appendChild(document.createTextNode(" "+who));return l}' +
+'function card(e){var d=mk("div","card"+(e.matched?" matched":""));' +
+'var t=mk("div","title",e.title);' +
+'if(e.matched)t.appendChild(pill("m","match"));' +
+'if(e.custom){t.appendChild(pill("c","pinned"));' +
+'var x=mk("button","del","\\u2715");' +
 'x.onclick=function(){var pw=prompt("Admin password to remove:");if(!pw)return;' +
 'fetch("/events/remove?pw="+encodeURIComponent(pw)+"&url="+encodeURIComponent(e.url))' +
 '.then(function(r){if(r.ok)d.remove();else alert("unauthorized")})};t.appendChild(x)}' +
-'d.appendChild(t);var m=document.createElement("div");m.className="meta";' +
-'var bits=[];if(e.date)bits.push("🗓 "+e.date);if(e.addedAt)bits.push("pinned "+e.addedAt.slice(0,10));' +
-'if(e.firstSeen)bits.push("seen "+e.firstSeen.slice(0,10));m.textContent=bits.join("  ·  ");d.appendChild(m);' +
-'var l=document.createElement("div");l.className="meta";var a=document.createElement("a");' +
-'a.href=e.url;a.textContent=e.url;a.target="_blank";a.rel="noopener";l.appendChild(a);d.appendChild(l);return d}' +
+'d.appendChild(t);' +
+'var bits=[];if(e.date)bits.push("\\ud83d\\uddd3 "+e.date);' +
+'if(e.store)bits.push("\\ud83c\\udfec "+e.store);' +
+'if(e.addedAt)bits.push("pinned "+e.addedAt.slice(0,10));' +
+'d.appendChild(mk("div","meta",bits.join("  \\u00b7  ")));' +
+'var l=mk("div","meta");var a=document.createElement("a");a.href=e.url;a.textContent=e.url;' +
+'a.target="_blank";a.rel="noopener";l.appendChild(a);d.appendChild(l);' +
+'var row=mk("div","marks");row.appendChild(box(e.url,"K"));row.appendChild(box(e.url,"R"));d.appendChild(row);' +
+'return d}' +
 'fetch("/events/data").then(function(r){return r.json()}).then(function(data){' +
-'document.getElementById("status").textContent="";var root=document.getElementById("root");' +
-'if(data.custom&&data.custom.length){var h=document.createElement("h2");h.textContent="📌 Pinned from chat";root.appendChild(h);' +
-'data.custom.slice().reverse().forEach(function(e){root.appendChild(card(e))})}' +
-'var names=Object.keys(data.stores||{}).sort();names.forEach(function(n){' +
-'var evs=data.stores[n]||[];if(!evs.length)return;var h=document.createElement("h2");h.textContent="🏬 "+n+" ("+evs.length+")";root.appendChild(h);' +
-'evs.slice().sort(function(a,b){return (b.matched?1:0)-(a.matched?1:0)||String(b.firstSeen).localeCompare(String(a.firstSeen))})' +
-'.forEach(function(e){root.appendChild(card(e))})});' +
-'if(!root.children.length)document.getElementById("status").textContent="No events yet — they appear as monitors report in."})' +
+'MARKS=data.marks||{};var items=[];' +
+'(data.custom||[]).forEach(function(e){e.when=Date.parse(e.addedAt)||Date.now();items.push(e)});' +
+'Object.keys(data.stores||{}).forEach(function(n){(data.stores[n]||[]).forEach(function(e){' +
+'e.store=n;var w=parseWhen(e.date);e.when=(w!=null)?w:(Date.parse(e.firstSeen)||0);items.push(e)})});' +
+'var cutoff=Date.now()-60*86400000;' +
+'var recent=items.filter(function(e){return e.when>=cutoff}).sort(function(a,b){return a.when-b.when});' +
+'var old=items.filter(function(e){return e.when<cutoff}).sort(function(a,b){return b.when-a.when});' +
+'var root=document.getElementById("root");recent.forEach(function(e){root.appendChild(card(e))});' +
+'if(old.length){var det=document.createElement("details");' +
+'det.appendChild(mk("summary",null,"\\ud83d\\uddc4 Older than 2 months ("+old.length+")"));' +
+'old.forEach(function(e){det.appendChild(card(e))});document.getElementById("oldwrap").appendChild(det)}' +
+'document.getElementById("status").textContent=' +
+'(recent.length||old.length)?"":"No events yet \\u2014 they appear as monitors report in."})' +
 '.catch(function(e){document.getElementById("status").textContent="Failed to load: "+e.message});' +
 '</script></body></html>';
 
