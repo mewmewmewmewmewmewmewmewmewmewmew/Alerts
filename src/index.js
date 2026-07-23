@@ -40,6 +40,12 @@ export default {
     if (url.pathname === "/poll") {
       return handlePollTrigger(request, env, url);
     }
+    // Public event board + its data / management endpoints.
+    if (url.pathname === "/events") return html(EVENTS_HTML);
+    if (url.pathname === "/events/data") return handleEventsData(env);
+    if (url.pathname === "/events/remove") return handleEventsRemove(request, env, url);
+    // LINE webhook: paste a link in the chat -> pinned to the event board.
+    if (url.pathname === "/line") return handleLineWebhook(request, env);
     return handleWebhook(request, env);
   },
 
@@ -334,6 +340,9 @@ async function handleLinkedWebhook(env, name, body, cfg) {
   const inc = (cfg.include || []).map(lc);
   const exc = (cfg.exclude || []).map(lc);
   const matching = items.filter((it) => matchTitle(it.title, inc, exc));
+
+  // Keep the event board up to date with everything captured (not just matches).
+  await upsertStoreEvents(env, name, items, new Set(matching.map((it) => it.url)));
 
   const key = LINKED_PREFIX + name;
   const raw = await env.MEW_STATE.get(key);
@@ -811,6 +820,186 @@ function buildTonamelMessage(monitorName, events) {
   if (events.length > 10) lines.push("…and " + (events.length - 10) + " more");
   return truncate(lines.join("\n").trim(), 4900);
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Event board — stores every captured event per store, plus custom events
+// pinned by pasting links into the LINE chat. Served at /events.
+// ════════════════════════════════════════════════════════════════════════════
+const EVENTS_STORE_PREFIX = "events::store::";
+const EVENTS_CUSTOM_KEY = "events::custom";
+
+async function upsertStoreEvents(env, name, items, matchingUrls) {
+  try {
+    const key = EVENTS_STORE_PREFIX + name;
+    let list = [];
+    try { list = JSON.parse((await env.MEW_STATE.get(key)) || "[]"); } catch (e) { list = []; }
+    const byUrl = new Map(list.map((e) => [e.url, e]));
+    const now = new Date().toISOString();
+    for (const it of items) {
+      const prev = byUrl.get(it.url);
+      if (prev) {
+        prev.title = it.title;
+        if (it.date) prev.date = it.date;
+        prev.lastSeen = now;
+        prev.matched = matchingUrls.has(it.url);
+      } else {
+        byUrl.set(it.url, {
+          title: it.title, url: it.url, date: it.date || "",
+          firstSeen: now, lastSeen: now, matched: matchingUrls.has(it.url),
+        });
+      }
+    }
+    let out = Array.from(byUrl.values());
+    if (out.length > 300) out = out.slice(out.length - 300);
+    await env.MEW_STATE.put(key, JSON.stringify(out));
+  } catch (err) {
+    console.log("upsertStoreEvents error: " + err);
+  }
+}
+
+async function handleEventsData(env) {
+  const stores = {};
+  try {
+    let cursor;
+    do {
+      const res = await env.MEW_STATE.list({ prefix: EVENTS_STORE_PREFIX, cursor });
+      for (const k of res.keys) {
+        const name = k.name.slice(EVENTS_STORE_PREFIX.length);
+        try { stores[name] = JSON.parse((await env.MEW_STATE.get(k.name)) || "[]"); } catch (e) { stores[name] = []; }
+      }
+      cursor = res.list_complete ? undefined : res.cursor;
+    } while (cursor);
+  } catch (err) {
+    console.log("events data error: " + err);
+  }
+  let custom = [];
+  try { custom = JSON.parse((await env.MEW_STATE.get(EVENTS_CUSTOM_KEY)) || "[]"); } catch (e) { custom = []; }
+  return json({ custom, stores });
+}
+
+async function handleEventsRemove(request, env, url) {
+  const pw = url.searchParams.get("pw") || request.headers.get("x-admin-password") || "";
+  if (!env.ADMIN_PASSWORD || !safeEqual(pw, env.ADMIN_PASSWORD)) return json({ error: "unauthorized" }, 401);
+  const target = url.searchParams.get("url") || "";
+  if (!target) return json({ error: "missing url" }, 400);
+  let custom = [];
+  try { custom = JSON.parse((await env.MEW_STATE.get(EVENTS_CUSTOM_KEY)) || "[]"); } catch (e) { custom = []; }
+  const next = custom.filter((e) => e.url !== target);
+  await env.MEW_STATE.put(EVENTS_CUSTOM_KEY, JSON.stringify(next));
+  return json({ ok: true, removed: custom.length - next.length });
+}
+
+// ── LINE webhook: paste a link in the chat → pinned as a custom event ───────
+async function handleLineWebhook(request, env) {
+  if (request.method !== "POST") return text("OK");
+  const bodyText = await request.text();
+  if (!env.LINE_CHANNEL_SECRET) return text("LINE_CHANNEL_SECRET not set", 503);
+
+  const sig = request.headers.get("x-line-signature") || "";
+  if (!(await verifyLineSignature(env.LINE_CHANNEL_SECRET, bodyText, sig))) {
+    return text("bad signature", 403);
+  }
+
+  let payload;
+  try { payload = JSON.parse(bodyText); } catch (e) { return text("bad json", 400); }
+
+  for (const ev of payload.events || []) {
+    if (ev.type !== "message" || !ev.message || ev.message.type !== "text") continue;
+    const txt = ev.message.text || "";
+    const urls = txt.match(/https?:\/\/\S+/g) || [];
+    if (!urls.length) continue;
+
+    const note = txt.replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim();
+    let custom = [];
+    try { custom = JSON.parse((await env.MEW_STATE.get(EVENTS_CUSTOM_KEY)) || "[]"); } catch (e) { custom = []; }
+    let added = 0;
+    const now = new Date().toISOString();
+    for (const u of urls) {
+      if (custom.some((e) => e.url === u)) continue;
+      custom.push({ title: note || u, url: u, date: "", addedAt: now, custom: true });
+      added++;
+    }
+    if (custom.length > 500) custom = custom.slice(custom.length - 500);
+    await env.MEW_STATE.put(EVENTS_CUSTOM_KEY, JSON.stringify(custom));
+    await logDecision(env, "LINE chat", "Pinned " + added + " custom event(s) from chat");
+
+    // Reply messages are FREE (they don't count against the monthly push quota).
+    if (ev.replyToken) {
+      await lineReply(env, ev.replyToken,
+        added > 0 ? "📌 Pinned " + added + " link" + (added > 1 ? "s" : "") + " to the event board!"
+                  : "📌 Already on the board!");
+    }
+  }
+  return text("OK");
+}
+
+async function verifyLineSignature(secret, body, signature) {
+  try {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+    const b64 = btoa(String.fromCharCode.apply(null, Array.from(new Uint8Array(mac))));
+    return safeEqual(b64, signature);
+  } catch (err) {
+    console.log("verifyLineSignature error: " + err);
+    return false;
+  }
+}
+
+async function lineReply(env, replyToken, messageText) {
+  try {
+    const resp = await fetch("https://api.line.me/v2/bot/message/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.LINE_TOKEN },
+      body: JSON.stringify({ replyToken, messages: [{ type: "text", text: messageText }] }),
+    });
+    if (resp.status !== 200) console.log("LINE reply failed (" + resp.status + "): " + (await resp.text()));
+  } catch (err) {
+    console.log("LINE reply error: " + err);
+  }
+}
+
+// ── Event board HTML (public, read-only; custom-event delete needs password) ─
+const EVENTS_HTML =
+'<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+'<meta name="viewport" content="width=device-width,initial-scale=1">' +
+'<title>Mew Events</title><style>' +
+'*{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;' +
+'max-width:720px;margin:0 auto;padding:16px;background:#0f1115;color:#e6e6e6}' +
+'h1{font-size:22px}h2{font-size:15px;margin:20px 0 8px;color:#a9b1bd}' +
+'.card{border:1px solid #2a2e37;border-radius:10px;padding:10px 12px;margin:8px 0;background:#161a22}' +
+'.card.matched{border-color:#3b82f6}.title{font-weight:600;word-break:break-word}' +
+'.meta{font-size:12px;color:#8a93a2;margin-top:4px}a{color:#7ab5ff;word-break:break-all}' +
+'.pill{display:inline-block;font-size:11px;border-radius:99px;padding:1px 8px;margin-left:6px;vertical-align:middle}' +
+'.pill.m{background:#1d3a6b;color:#9cc3ff}.pill.c{background:#5b3a1d;color:#ffc99c}' +
+'.del{float:right;background:none;border:0;color:#8a93a2;cursor:pointer;font-size:14px}' +
+'#status{color:#8a93a2;font-size:13px}</style></head><body>' +
+'<h1>🐱 Mew Events</h1><p id="status">Loading…</p><div id="root"></div><script>' +
+'function card(e){var d=document.createElement("div");d.className="card"+(e.matched?" matched":"");' +
+'var t=document.createElement("div");t.className="title";t.textContent=e.title;' +
+'if(e.matched){var p=document.createElement("span");p.className="pill m";p.textContent="match";t.appendChild(p)}' +
+'if(e.custom){var p2=document.createElement("span");p2.className="pill c";p2.textContent="pinned";t.appendChild(p2);' +
+'var x=document.createElement("button");x.className="del";x.textContent="✕";' +
+'x.onclick=function(){var pw=prompt("Admin password to remove:");if(!pw)return;' +
+'fetch("/events/remove?pw="+encodeURIComponent(pw)+"&url="+encodeURIComponent(e.url))' +
+'.then(function(r){if(r.ok)d.remove();else alert("unauthorized")})};t.appendChild(x)}' +
+'d.appendChild(t);var m=document.createElement("div");m.className="meta";' +
+'var bits=[];if(e.date)bits.push("🗓 "+e.date);if(e.addedAt)bits.push("pinned "+e.addedAt.slice(0,10));' +
+'if(e.firstSeen)bits.push("seen "+e.firstSeen.slice(0,10));m.textContent=bits.join("  ·  ");d.appendChild(m);' +
+'var l=document.createElement("div");l.className="meta";var a=document.createElement("a");' +
+'a.href=e.url;a.textContent=e.url;a.target="_blank";a.rel="noopener";l.appendChild(a);d.appendChild(l);return d}' +
+'fetch("/events/data").then(function(r){return r.json()}).then(function(data){' +
+'document.getElementById("status").textContent="";var root=document.getElementById("root");' +
+'if(data.custom&&data.custom.length){var h=document.createElement("h2");h.textContent="📌 Pinned from chat";root.appendChild(h);' +
+'data.custom.slice().reverse().forEach(function(e){root.appendChild(card(e))})}' +
+'var names=Object.keys(data.stores||{}).sort();names.forEach(function(n){' +
+'var evs=data.stores[n]||[];if(!evs.length)return;var h=document.createElement("h2");h.textContent="🏬 "+n+" ("+evs.length+")";root.appendChild(h);' +
+'evs.slice().sort(function(a,b){return (b.matched?1:0)-(a.matched?1:0)||String(b.firstSeen).localeCompare(String(a.firstSeen))})' +
+'.forEach(function(e){root.appendChild(card(e))})});' +
+'if(!root.children.length)document.getElementById("status").textContent="No events yet — they appear as monitors report in."})' +
+'.catch(function(e){document.getElementById("status").textContent="Failed to load: "+e.message});' +
+'</script></body></html>';
 
 // ── Admin page HTML (self-contained; no backticks / ${} inside) ──────────────
 const ADMIN_HTML =

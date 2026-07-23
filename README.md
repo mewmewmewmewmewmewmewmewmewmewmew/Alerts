@@ -227,6 +227,32 @@ Configured under the `tonamel` block in `config.json`:
 **Test it without waiting for the cron:** `GET /poll?key=<ADMIN_PASSWORD>` runs
 all Tonamel monitors immediately and returns a JSON summary of what it did.
 
+## Event board (`/events`)
+
+A public read-only page listing every event the monitors have captured,
+grouped by store — matches highlighted, dates and links included. Backed by
+`events::store::<name>` keys that update on every check.
+
+**Pin custom events from the LINE chat:** paste any link (optionally with a
+note) into the group and the bot pins it to the board's 📌 section and replies
+a confirmation. Replies are free — they don't consume the monthly push quota.
+Removing a pinned event (✕ on the board) asks for `ADMIN_PASSWORD`.
+
+One-time LINE setup for chat pinning:
+1. Cloudflare → Worker → add secret `LINE_CHANNEL_SECRET` (from LINE Developers
+   Console → channel → Basic settings). Used to verify webhook signatures.
+2. LINE Developers Console → Messaging API → set **Webhook URL** to
+   `https://<worker>/line`, enable **Use webhook**.
+3. In LINE Official Account Manager → Response settings: enable webhooks,
+   disable auto-reply.
+
+## Diagnostics (`/admin/health`)
+
+`GET /admin/health?pw=<ADMIN_PASSWORD>` returns the last 50 webhook decisions
+(`Baseline` / `No new` / `Sent …` / `LINE FAILED (status)…`), newest first.
+Failed LINE pushes are retried on the next check — events are only marked
+seen after LINE accepts the message.
+
 ## Local development & logs
 
 ```bash
