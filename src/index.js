@@ -985,54 +985,57 @@ async function lineReply(env, replyToken, messageText) {
   }
 }
 
-// ── Event board HTML: one list sorted by date (event date, or date pinned),
-//    events older than 2 months collapsed, shared K/R entered-checkmarks. ────
+// ── Event board HTML: compact date-sorted list, >2-month-old collapsed,
+//    shared K/R entered-checkmarks. One row per event. ──────────────────────
 const EVENTS_HTML =
 '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
 '<meta name="viewport" content="width=device-width,initial-scale=1">' +
 '<title>Mew Events</title><style>' +
 '*{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;' +
-'max-width:720px;margin:0 auto;padding:16px;background:#0f1115;color:#e6e6e6}' +
-'h1{font-size:22px}' +
-'.card{border:1px solid #2a2e37;border-radius:10px;padding:10px 12px;margin:8px 0;background:#161a22}' +
-'.card.matched{border-color:#3b82f6}.title{font-weight:600;word-break:break-word}' +
-'.meta{font-size:12px;color:#8a93a2;margin-top:4px}a{color:#7ab5ff;word-break:break-all}' +
-'.pill{display:inline-block;font-size:11px;border-radius:99px;padding:1px 8px;margin-left:6px;vertical-align:middle}' +
-'.pill.m{background:#1d3a6b;color:#9cc3ff}.pill.c{background:#5b3a1d;color:#ffc99c}' +
-'.del{float:right;background:none;border:0;color:#8a93a2;cursor:pointer;font-size:14px}' +
-'.marks{margin-top:8px;display:flex;gap:18px}.mark{font-size:14px;color:#c6cbd4;cursor:pointer;user-select:none}' +
-'input[type=checkbox]{width:17px;height:17px;accent-color:#3b82f6;vertical-align:middle;cursor:pointer}' +
-'details{margin-top:24px}summary{cursor:pointer;color:#a9b1bd;font-size:15px}' +
-'#status{color:#8a93a2;font-size:13px}</style></head><body>' +
-'<h1>🐱 Mew Events</h1><p id="status">Loading…</p><div id="root"></div><div id="oldwrap"></div><script>' +
-'var MARKS={};' +
+'max-width:760px;margin:0 auto;padding:14px;background:#0f1115;color:#e6e6e6}' +
+'h1{font-size:20px;margin:6px 0 12px}' +
+'.row{display:flex;align-items:center;gap:10px;padding:7px 8px;border-bottom:1px solid #1e2229;border-left:3px solid transparent}' +
+'.row.matched{border-left-color:#3b82f6;background:#131926}' +
+'.row:hover{background:#171c26}' +
+'.d{flex:0 0 66px;font-size:12.5px;color:#a9b1bd;font-variant-numeric:tabular-nums;white-space:nowrap}' +
+'.t{flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+'.t a{color:#e6e6e6;text-decoration:none}.t a:hover{color:#7ab5ff;text-decoration:underline}' +
+'.s{flex:0 0 auto;font-size:11px;color:#8a93a2;background:#1c212b;border-radius:99px;padding:1px 8px;white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis}' +
+'.pin{flex:0 0 auto;font-size:12px}' +
+'.mk{flex:0 0 auto;display:flex;gap:10px}' +
+'.mk label{font-size:12.5px;color:#c6cbd4;cursor:pointer;user-select:none;display:flex;align-items:center;gap:3px}' +
+'input[type=checkbox]{width:15px;height:15px;accent-color:#3b82f6;cursor:pointer;margin:0}' +
+'.del{flex:0 0 auto;background:none;border:0;color:#59606c;cursor:pointer;font-size:12px;padding:0 2px}' +
+'details{margin-top:18px}summary{cursor:pointer;color:#a9b1bd;font-size:14px;padding:4px 0}' +
+'#status{color:#8a93a2;font-size:13px}' +
+'@media(max-width:520px){.s{display:none}.d{flex-basis:52px}}' +
+'</style></head><body>' +
+'<h1>\\ud83d\\udc31 Mew Events</h1><p id="status">Loading\\u2026</p>' +
+'<div id="root"></div><div id="oldwrap"></div><script>' +
+'var MARKS={};var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
 'function mk(tag,cls,txt){var el=document.createElement(tag);if(cls)el.className=cls;if(txt!=null)el.textContent=txt;return el}' +
-'function pill(k,txt){return mk("span","pill "+k,txt)}' +
 'function parseWhen(s){if(!s)return null;var t=Date.parse(String(s).split("\\u30fb")[0].trim());return isNaN(t)?null:t}' +
-'function box(u,who){var l=mk("label","mark");var c=document.createElement("input");c.type="checkbox";' +
+'function fmtDate(ts){if(!ts)return "\\u2014";var d=new Date(ts);return (d.getMonth()+1)+"/"+d.getDate()+" "+DAYS[d.getDay()]}' +
+'function shortStore(n){var p=String(n).split("@");return (p.length>1?p[p.length-1]:n).trim()}' +
+'function box(u,who){var l=document.createElement("label");var c=document.createElement("input");c.type="checkbox";' +
 'c.checked=!!(MARKS[u]&&MARKS[u][who]);' +
 'c.onchange=function(){var v=c.checked;' +
 'fetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+(v?"1":"0"))' +
 '.then(function(r){if(!r.ok){c.checked=!v;alert("save failed")}else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
 '.catch(function(){c.checked=!v;alert("save failed")})};' +
-'l.appendChild(c);l.appendChild(document.createTextNode(" "+who));return l}' +
-'function card(e){var d=mk("div","card"+(e.matched?" matched":""));' +
-'var t=mk("div","title",e.title);' +
-'if(e.matched)t.appendChild(pill("m","match"));' +
-'if(e.custom){t.appendChild(pill("c","pinned"));' +
-'var x=mk("button","del","\\u2715");' +
+'l.appendChild(c);l.appendChild(document.createTextNode(who));return l}' +
+'function row(e){var r=mk("div","row"+(e.matched?" matched":""));' +
+'r.appendChild(mk("span","d",fmtDate(e.when)));' +
+'if(e.custom)r.appendChild(mk("span","pin","\\ud83d\\udccc"));' +
+'var t=mk("span","t");var a=document.createElement("a");a.href=e.url;a.textContent=e.title;' +
+'a.target="_blank";a.rel="noopener";a.title=e.title;t.appendChild(a);r.appendChild(t);' +
+'if(e.store)r.appendChild(mk("span","s",shortStore(e.store)));' +
+'var m=mk("span","mk");m.appendChild(box(e.url,"K"));m.appendChild(box(e.url,"R"));r.appendChild(m);' +
+'if(e.custom){var x=mk("button","del","\\u2715");' +
 'x.onclick=function(){var pw=prompt("Admin password to remove:");if(!pw)return;' +
 'fetch("/events/remove?pw="+encodeURIComponent(pw)+"&url="+encodeURIComponent(e.url))' +
-'.then(function(r){if(r.ok)d.remove();else alert("unauthorized")})};t.appendChild(x)}' +
-'d.appendChild(t);' +
-'var bits=[];if(e.date)bits.push("\\ud83d\\uddd3 "+e.date);' +
-'if(e.store)bits.push("\\ud83c\\udfec "+e.store);' +
-'if(e.addedAt)bits.push("pinned "+e.addedAt.slice(0,10));' +
-'d.appendChild(mk("div","meta",bits.join("  \\u00b7  ")));' +
-'var l=mk("div","meta");var a=document.createElement("a");a.href=e.url;a.textContent=e.url;' +
-'a.target="_blank";a.rel="noopener";l.appendChild(a);d.appendChild(l);' +
-'var row=mk("div","marks");row.appendChild(box(e.url,"K"));row.appendChild(box(e.url,"R"));d.appendChild(row);' +
-'return d}' +
+'.then(function(r2){if(r2.ok)r.remove();else alert("unauthorized")})};r.appendChild(x)}' +
+'return r}' +
 'fetch("/events/data").then(function(r){return r.json()}).then(function(data){' +
 'MARKS=data.marks||{};var items=[];' +
 '(data.custom||[]).forEach(function(e){e.when=Date.parse(e.addedAt)||Date.now();items.push(e)});' +
@@ -1041,10 +1044,10 @@ const EVENTS_HTML =
 'var cutoff=Date.now()-60*86400000;' +
 'var recent=items.filter(function(e){return e.when>=cutoff}).sort(function(a,b){return a.when-b.when});' +
 'var old=items.filter(function(e){return e.when<cutoff}).sort(function(a,b){return b.when-a.when});' +
-'var root=document.getElementById("root");recent.forEach(function(e){root.appendChild(card(e))});' +
+'var root=document.getElementById("root");recent.forEach(function(e){root.appendChild(row(e))});' +
 'if(old.length){var det=document.createElement("details");' +
 'det.appendChild(mk("summary",null,"\\ud83d\\uddc4 Older than 2 months ("+old.length+")"));' +
-'old.forEach(function(e){det.appendChild(card(e))});document.getElementById("oldwrap").appendChild(det)}' +
+'old.forEach(function(e){det.appendChild(row(e))});document.getElementById("oldwrap").appendChild(det)}' +
 'document.getElementById("status").textContent=' +
 '(recent.length||old.length)?"":"No events yet \\u2014 they appear as monitors report in."})' +
 '.catch(function(e){document.getElementById("status").textContent="Failed to load: "+e.message});' +
