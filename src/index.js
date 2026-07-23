@@ -1053,10 +1053,10 @@ const EVENTS_HTML =
 '#status{color:var(--grey-500);font-size:11px}' +
 '@media(max-width:520px){.s{display:none}.d{flex-basis:56px}}' +
 '</style></head><body>' +
-'<h1>Mew Events</h1><div class="rule"></div><p id="status">Loading\\u2026</p>' +
+'<h1>Mew Events</h1><div class="rule"></div><p id="status">Loading&#8230;</p>' +
 '<div class="hdr" id="hdr" style="display:none">' +
-'<span class="d">Date \\u30fb \\u3006</span><span class="t">Event</span>' +
-'<span class="s">Store</span><span class="ad">Added</span><span class="mk">K \\u30fb R</span><span class="x"></span></div>' +
+'<span class="d">Date &#x30fb; &#x3006;</span><span class="t">Event</span>' +
+'<span class="s">Store</span><span class="ad">Added</span><span class="mk">K &#x30fb; R</span><span class="x"></span></div>' +
 '<div id="root"></div><div id="oldwrap"></div><script>' +
 'var MARKS={};var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
 'function mk(tag,cls,txt){var el=document.createElement(tag);if(cls)el.className=cls;if(txt!=null)el.textContent=txt;return el}' +
