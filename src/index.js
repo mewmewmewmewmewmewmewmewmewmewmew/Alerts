@@ -598,14 +598,18 @@ function text(body, status = 200) {
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 }
 
 function html(body, status = 200) {
   return new Response(body, {
     status,
-    headers: { "content-type": "text/html; charset=utf-8", "x-robots-tag": "noindex" },
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "x-robots-tag": "noindex",
+      "cache-control": "no-store",
+    },
   });
 }
 
