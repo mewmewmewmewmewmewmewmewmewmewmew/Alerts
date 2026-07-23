@@ -1060,7 +1060,14 @@ const EVENTS_HTML =
 '<div id="root"></div><div id="oldwrap"></div><script>' +
 'var MARKS={};var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
 'function mk(tag,cls,txt){var el=document.createElement(tag);if(cls)el.className=cls;if(txt!=null)el.textContent=txt;return el}' +
-'function parseWhen(s){if(!s)return null;var t=Date.parse(String(s).split("\\u30fb")[0].trim());return isNaN(t)?null:t}' +
+'function parseWhen(s){if(!s)return null;' +
+'s=String(s).split("\\u30fb")[0].replace(/[\\uff08(].*?[)\\uff09]/g,"").trim();if(!s)return null;' +
+'var m=s.match(/(20\\d{2})[\\/\\u5e74]\\s*(\\d{1,2})[\\/\\u6708]\\s*(\\d{1,2})/);' +
+'if(m)return new Date(+m[1],+m[2]-1,+m[3]).getTime();' +
+'m=s.match(/(\\d{1,2})\\s*[\\/\\u6708]\\s*(\\d{1,2})/);' +
+'if(m){var now=new Date();var y=now.getFullYear();var ts=new Date(y,+m[1]-1,+m[2]).getTime();' +
+'if(ts<now.getTime()-45*86400000)ts=new Date(y+1,+m[1]-1,+m[2]).getTime();return ts}' +
+'var t=Date.parse(s);return isNaN(t)?null:t}' +
 'function fmtDate(ts){if(!ts)return "\\u2014";var d=new Date(ts);return (d.getMonth()+1)+"/"+d.getDate()+" "+DAYS[d.getDay()]}' +
 'function shortStore(n){var p=String(n).split("@");return (p.length>1?p[p.length-1]:n).trim()}' +
 'function box(u,who){var l=document.createElement("label");var c=document.createElement("input");c.type="checkbox";' +
