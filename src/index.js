@@ -991,26 +991,41 @@ const EVENTS_HTML =
 '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
 '<meta name="viewport" content="width=device-width,initial-scale=1">' +
 '<title>Mew Events</title><style>' +
-'*{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;' +
-'max-width:760px;margin:0 auto;padding:14px;background:#0f1115;color:#e6e6e6}' +
-'h1{font-size:20px;margin:6px 0 12px}' +
-'.row{display:flex;align-items:center;gap:10px;padding:7px 8px;border-bottom:1px solid #1e2229;border-left:3px solid transparent}' +
-'.row.matched{border-left-color:#3b82f6;background:#131926}' +
-'.row:hover{background:#171c26}' +
-'.d{flex:0 0 66px;font-size:12.5px;color:#a9b1bd;font-variant-numeric:tabular-nums;white-space:nowrap}' +
-'.t{flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
-'.t a{color:#e6e6e6;text-decoration:none}.t a:hover{color:#7ab5ff;text-decoration:underline}' +
-'.s{flex:0 0 auto;font-size:11px;color:#8a93a2;background:#1c212b;border-radius:99px;padding:1px 8px;white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis}' +
-'.pin{flex:0 0 auto;font-size:12px}' +
+'@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap");' +
+/* Mew Catalog tokens (from claude.ai/design: Mew Catalog Design System) */
+':root{--pink-050:#FFF0F7;--pink-100:#FFD6E9;--pink-300:#FFA8D0;--pink-500:#FF7BB6;--pink-700:#FF4D9D;--pink-800:#C24A80;' +
+'--white:#FFFFFF;--grey-050:#F8F8F9;--grey-100:#F1F1F3;--grey-200:#E4E4E8;--grey-300:#CFCFD5;--grey-400:#A7A7B0;' +
+'--grey-500:#82828B;--grey-600:#5F5F67;--grey-800:#38383E;--ink:#211F22;' +
+'--font-display:"Outfit","Zen Kaku Gothic New",sans-serif;' +
+'--font-body:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN",sans-serif;' +
+'--font-data:"IBM Plex Mono",ui-monospace,monospace}' +
+'*{box-sizing:border-box}' +
+'body{font-family:var(--font-body);max-width:720px;margin:0 auto;padding:20px 16px;' +
+'background:var(--white);color:var(--grey-800);-webkit-font-smoothing:antialiased}' +
+'h1{font-family:var(--font-display);font-size:24px;font-weight:700;color:var(--ink);' +
+'margin:0 0 4px;letter-spacing:0.01em}' +
+'.rule{height:2px;background:var(--pink-700);width:44px;margin:0 0 18px;border-radius:2px}' +
+'.row{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--grey-200);border-left:2px solid transparent}' +
+'.row.matched{border-left-color:var(--pink-300);background:var(--pink-050)}' +
+'.d{flex:0 0 70px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);white-space:nowrap}' +
+'.t{flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+'.t a{color:var(--ink);text-decoration:none}.t a:hover{color:var(--pink-800);text-decoration:underline}' +
+'.s{flex:0 0 auto;font-size:9px;font-weight:500;color:var(--grey-500);text-transform:uppercase;' +
+'letter-spacing:0.08em;border:1px solid var(--grey-200);border-radius:2px;padding:2px 6px;' +
+'white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis}' +
+'.pin{flex:0 0 auto;font-size:11px}' +
 '.mk{flex:0 0 auto;display:flex;gap:10px}' +
-'.mk label{font-size:12.5px;color:#c6cbd4;cursor:pointer;user-select:none;display:flex;align-items:center;gap:3px}' +
-'input[type=checkbox]{width:15px;height:15px;accent-color:#3b82f6;cursor:pointer;margin:0}' +
-'.del{flex:0 0 auto;background:none;border:0;color:#59606c;cursor:pointer;font-size:12px;padding:0 2px}' +
-'details{margin-top:18px}summary{cursor:pointer;color:#a9b1bd;font-size:14px;padding:4px 0}' +
-'#status{color:#8a93a2;font-size:13px}' +
-'@media(max-width:520px){.s{display:none}.d{flex-basis:52px}}' +
+'.mk label{font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);cursor:pointer;' +
+'user-select:none;display:flex;align-items:center;gap:3px}' +
+'input[type=checkbox]{width:14px;height:14px;accent-color:var(--pink-700);cursor:pointer;margin:0}' +
+'.del{flex:0 0 auto;background:none;border:0;color:var(--grey-400);cursor:pointer;font-size:11px;padding:0 2px}' +
+'.del:hover{color:var(--pink-800)}' +
+'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
+'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
+'#status{color:var(--grey-500);font-size:11px}' +
+'@media(max-width:520px){.s{display:none}.d{flex-basis:56px}}' +
 '</style></head><body>' +
-'<h1>\\ud83d\\udc31 Mew Events</h1><p id="status">Loading\\u2026</p>' +
+'<h1>Mew Events</h1><div class="rule"></div><p id="status">Loading\\u2026</p>' +
 '<div id="root"></div><div id="oldwrap"></div><script>' +
 'var MARKS={};var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
 'function mk(tag,cls,txt){var el=document.createElement(tag);if(cls)el.className=cls;if(txt!=null)el.textContent=txt;return el}' +
