@@ -320,6 +320,14 @@ function dedupeByUrl(items) {
 }
 
 async function handleLinkedWebhook(env, name, body, cfg) {
+  // Best-effort concurrency guard: Distill sometimes posts the same check
+  // twice within a second; both could read the seen-set before either writes
+  // it and double-send. Skipped posts lose nothing — unseen events are caught
+  // on the next check. (KV TTL minimum is 60s.)
+  const lockKey = "lock::" + name;
+  if (await env.MEW_STATE.get(lockKey)) return text("Busy");
+  await env.MEW_STATE.put(lockKey, "1", { expirationTtl: 60 });
+
   // Some pages render the list more than once (responsive/duplicate DOM), so
   // dedupe by URL before doing anything else.
   const items = dedupeByUrl(parseLinkedItems(body));
@@ -366,7 +374,9 @@ async function handleLinkedWebhook(env, name, body, cfg) {
   if (!send.ok) {
     await logDecision(env, name,
       "LINE FAILED (" + send.status + ") for " + fresh.length + " new: " + send.detail + " — will retry next check");
-    return text("LINE failed", 502);
+    // 200, not 5xx: a 5xx makes Distill re-fire the webhook, which just spams
+    // the quota-limited API. Our own retry happens on the next check anyway.
+    return text("LINE failed (will retry next check)");
   }
 
   await persistSeen();
