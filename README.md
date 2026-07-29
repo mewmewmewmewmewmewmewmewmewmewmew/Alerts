@@ -132,6 +132,18 @@ Everything still reaches the board meanwhile.
 `No new`, `Sent 3: …`, or `LINE FAILED (429): …`. This is the first place to
 look when an alert didn't arrive.
 
+## Custom domain
+
+Add it as a **Custom Domain** on the Worker (Settings → Domains & Routes →
+Add → Custom Domain), not as a hand-written DNS record: Cloudflare creates the
+record and cert itself, and a manual CNAME to `*.workers.dev` is refused
+(Error 1014). The domain must be in your Cloudflare account.
+
+A custom domain maps the whole hostname to the Worker, so a bare visit to the
+root redirects to `/events`; captures (POSTs, or GETs carrying `text`) are
+unaffected. Afterwards repoint the `WEBHOOK_URL` repo secret and, if chat
+pinning is set up, the LINE webhook URL.
+
 ## Deploying
 
 The Worker auto-deploys from this repo (Cloudflare → Workers → connected to

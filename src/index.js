@@ -52,6 +52,14 @@ export default {
     if (url.pathname === "/events/mark") return handleEventsMark(request, env, url);
     // LINE webhook: paste a link in the chat -> pinned to the event board.
     if (url.pathname === "/line") return handleLineWebhook(request, env);
+
+    // A plain visit to the root (no capture payload) is someone opening the
+    // site — e.g. a custom domain like alert.example.net — so show the board.
+    // Real captures are POSTs, or GETs carrying name/text params.
+    if (request.method === "GET" && url.pathname === "/" && !url.searchParams.has("text")) {
+      return Response.redirect(url.origin + "/events", 302);
+    }
+
     return handleWebhook(request, env);
   },
 
