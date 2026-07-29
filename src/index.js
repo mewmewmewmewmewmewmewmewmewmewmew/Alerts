@@ -841,6 +841,7 @@ const EVENTS_HTML =
 '.hdr .sortable{cursor:pointer}.hdr .sortable:hover,.hdr .on{color:var(--pink-800)}' +
 '.hdr .s{border:0;padding:0;max-width:none;background:none}' +
 '.hdr .dl{padding:0;text-align:left;background:none;border:0}' +
+'.hdr .mk span{display:inline-block;width:26px;text-align:center;white-space:nowrap}' +
 'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
 'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
 '#status{color:var(--grey-500);font-size:11px}' +
@@ -875,7 +876,8 @@ const EVENTS_HTML =
 '<span class="d sortable" data-k="when">Date</span><span class="t sortable" data-k="title">Event</span>' +
 '<span class="s sortable" data-k="store">Store</span>' +
 '<span class="sp sortable" data-k="entry">Spots</span>' +
-'<span class="mk"></span>' +
+'<span class="mk"><span class="sortable" data-k="K">K</span>' +
+'<span class="sortable" data-k="R">R</span></span>' +
 '<span class="dl sortable" data-k="deadline">Entry &#x3006;</span></div>' +
 '<div id="root"></div><div id="oldwrap"></div>' +
 '<div id="dock"><div id="dockbar">' +
@@ -959,6 +961,8 @@ const EVENTS_HTML =
 'if(k==="title")return d*String(a.title||"").localeCompare(String(b.title||""));' +
 'if(k==="store")return d*shortStore(a.store||"").localeCompare(shortStore(b.store||""));' +
 'if(k==="added")return d*((a.addedTs||0)-(b.addedTs||0));' +
+'if(k==="K"||k==="R"){var am=MARKS[a.url]&&MARKS[a.url][k]?1:0,' +
+'bm=MARKS[b.url]&&MARKS[b.url][k]?1:0;if(am!==bm)return d*(am-bm);return (a.when||0)-(b.when||0)}' +
 'if(k==="entry")return d*String(a.entry||"\\uffff").localeCompare(String(b.entry||"\\uffff"));' +
 'if(k==="deadline"){var x=parseWhen(a.deadline)||Infinity,y=parseWhen(b.deadline)||Infinity;return (x===y)?0:d*(x-y)}' +
 'return d*((a.when||0)-(b.when||0))}' +
