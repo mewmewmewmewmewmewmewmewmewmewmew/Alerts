@@ -309,8 +309,10 @@ function parseLinkedItems(body) {
       const title = parts[0];
       const url = parts[1];
       const date = parts[2] || "";
+      const deadline = parts[3] || ""; // entry/registration closes
+      const spots = parts[4] || ""; // "29/30"
       if (!title || !url) return null;
-      return { title, url, date };
+      return { title, url, date, deadline, spots };
     })
     .filter(Boolean);
 }
@@ -399,7 +401,11 @@ function buildLinkedMessage(name, items) {
   const lines = [header, "", "📅 " + name, ""];
   items.slice(0, 10).forEach((it) => {
     lines.push("🎯 " + truncate(it.title, 200));
-    if (it.date) lines.push("🗓 " + truncate(it.date, 100));
+    const meta = [];
+    if (it.date) meta.push("🗓 " + truncate(it.date, 100));
+    if (it.deadline) meta.push("〆 " + truncate(it.deadline, 100));
+    if (it.spots) meta.push("👥 " + truncate(it.spots, 20));
+    if (meta.length) lines.push(meta.join("   "));
     lines.push("🔗 " + it.url);
     lines.push("");
   });
@@ -846,11 +852,14 @@ async function upsertStoreEvents(env, name, items, matchingUrls) {
       if (prev) {
         prev.title = it.title;
         if (it.date) prev.date = it.date;
+        if (it.deadline) prev.deadline = it.deadline;
+        if (it.spots) prev.spots = it.spots; // fill/capacity changes over time
         prev.lastSeen = now;
         prev.matched = matchingUrls.has(it.url);
       } else {
         byUrl.set(it.url, {
           title: it.title, url: it.url, date: it.date || "",
+          deadline: it.deadline || "", spots: it.spots || "",
           firstSeen: now, lastSeen: now, matched: matchingUrls.has(it.url),
         });
       }
@@ -1040,6 +1049,9 @@ const EVENTS_HTML =
 'letter-spacing:0.08em;border:1px solid var(--grey-200);border-radius:2px;padding:2px 6px;' +
 'white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis}' +
 '.pin{flex:0 0 auto;font-size:11px}' +
+'.dl{flex:0 0 52px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);white-space:nowrap}' +
+'.dl.soon{color:var(--pink-800)}' +
+'.sp{flex:0 0 46px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.ad{flex:0 0 44px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.mk{flex:0 0 66px;display:flex;gap:10px}' +
 '.mk label{font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);cursor:pointer;' +
@@ -1072,7 +1084,9 @@ const EVENTS_HTML =
 '<p id="status">Loading&#8230;</p>' +
 '<div class="hdr" id="hdr" style="display:none">' +
 '<span class="d sortable" data-k="when">Date &#x30fb; &#x3006;</span><span class="t sortable" data-k="title">Event</span>' +
-'<span class="s sortable" data-k="store">Store</span><span class="ad sortable" data-k="added">Added</span>' +
+'<span class="s sortable" data-k="store">Store</span>' +
+'<span class="dl sortable" data-k="deadline">Entry &#x3006;</span><span class="sp">Spots</span>' +
+'<span class="ad sortable" data-k="added">Added</span>' +
 '<span class="mk">K &#x30fb; R</span><span class="x"></span></div>' +
 '<div id="root"></div><div id="oldwrap"></div><script>' +
 'var MARKS={};var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
@@ -1102,6 +1116,11 @@ const EVENTS_HTML =
 'var t=mk("span","t");var a=document.createElement("a");a.href=e.url;a.textContent=e.title;' +
 'a.target="_blank";a.rel="noopener";a.title=e.title;t.appendChild(a);r.appendChild(t);' +
 'if(e.store)r.appendChild(mk("span","s",shortStore(e.store)));' +
+'var dts=parseWhen(e.deadline);' +
+'var dl=mk("span","dl",dts?("\\u3006"+fmtShort(new Date(dts).toISOString())):"\\u2014");' +
+'if(dts&&dts-Date.now()<3*86400000&&dts>=Date.now()-86400000)dl.classList.add("soon");' +
+'r.appendChild(dl);' +
+'r.appendChild(mk("span","sp",e.spots||"\\u2014"));' +
 'r.appendChild(mk("span","ad",fmtShort(e.added)));' +
 'var m=mk("span","mk");m.appendChild(box(e.url,"K"));m.appendChild(box(e.url,"R"));r.appendChild(m);' +
 'var xs=mk("span","x");' +
@@ -1117,6 +1136,8 @@ const EVENTS_HTML =
 'if(k==="title")return d*String(a.title||"").localeCompare(String(b.title||""));' +
 'if(k==="store")return d*shortStore(a.store||"").localeCompare(shortStore(b.store||""));' +
 'if(k==="added")return d*((a.addedTs||0)-(b.addedTs||0));' +
+'if(k==="deadline"){var x=parseWhen(a.deadline)||Infinity,y=parseWhen(b.deadline)||Infinity;' +
+'return (x===y)?0:d*(x-y)}' +
 'return d*((a.when||0)-(b.when||0))}' +
 'function render(){' +
 'var q=(document.getElementById("q").value||"").toLowerCase();' +

@@ -76,7 +76,61 @@ async function scrapeStore(page) {
   );
 }
 
-async function fetchStore(page, store) {
+/** Map the API's competition nodes to our wire format. */
+function nodesToEvents(edges) {
+  return edges
+    .map((e) => e?.node)
+    .filter((n) => n && n.id && n.publicStatus === "PUBLIC")
+    .map((n) => {
+      const menu = (n.entryMenus || [])[0] || null;
+      const entrants = menu?.countSummary?.currentEntrantNum;
+      const capacity = menu?.participantChosenNum;
+      return {
+        title: (n.title || "").replace(/\s*\|\|\|\s*/g, " ").trim(),
+        url: `https://tonamel.com/competition/${n.id}`,
+        date: fmtDate(n.tournaments?.[0]?.displayStartAt),
+        deadline: fmtDate(menu?.endAt),
+        spots: entrants != null && capacity != null ? `${entrants}/${capacity}` : "",
+      };
+    })
+    .filter((e) => e.title);
+}
+
+/**
+ * Preferred path: listen for the SPA's own GraphQL response as the page loads.
+ * The site's request succeeds where ours is refused, and it already asks for
+ * the entry window and entrant counts.
+ */
+async function interceptStore(page, store) {
+  const referer = `https://tonamel.com/organization/${store.org}?game=${store.game}`;
+  let captured = null;
+
+  const onResponse = async (resp) => {
+    if (captured) return;
+    if (!resp.url().includes("/graphql/competition_management")) return;
+    if (resp.status() !== 200) return;
+    try {
+      const body = await resp.json();
+      const edges = body?.data?.organization?.game?.competitions?.edges;
+      if (Array.isArray(edges) && edges.length) captured = edges;
+    } catch (e) {
+      /* not the payload we want */
+    }
+  };
+
+  page.on("response", onResponse);
+  try {
+    await page.goto(referer, { waitUntil: "domcontentloaded", timeout: 60000 });
+    // Give the SPA time to issue and receive its data call.
+    for (let i = 0; i < 20 && !captured; i++) await page.waitForTimeout(500);
+  } finally {
+    page.off("response", onResponse);
+  }
+
+  return captured ? nodesToEvents(captured) : null;
+}
+
+async function fetchStoreViaOwnRequest(page, store) {
   const referer = `https://tonamel.com/organization/${store.org}?game=${store.game}`;
   await page.goto(referer, { waitUntil: "domcontentloaded", timeout: 60000 });
   // Let the SPA boot so the API call happens in a fully-initialised context.
@@ -126,23 +180,27 @@ async function fetchStore(page, store) {
     return scrapeStore(page);
   }
 
-  console.log("  via API");
-  return edges
-    .map((e) => e?.node)
-    .filter((n) => n && n.id && n.publicStatus === "PUBLIC")
-    .map((n) => {
-      const start = n.tournaments?.[0]?.displayStartAt;
-      return {
-        title: (n.title || "").replace(/\s*\|\|\|\s*/g, " ").trim(),
-        url: `https://tonamel.com/competition/${n.id}`,
-        date: fmtDate(start),
-      };
-    })
-    .filter((e) => e.title);
+  console.log("  via own API request");
+  return nodesToEvents(edges);
+}
+
+/** Try, in order: intercept the site's own API response → our own API request → DOM. */
+async function fetchStore(page, store) {
+  const intercepted = await interceptStore(page, store);
+  if (intercepted && intercepted.length) {
+    console.log("  via intercepted API response");
+    return intercepted;
+  }
+  console.log("  no API response captured — trying a direct request");
+  return fetchStoreViaOwnRequest(page, store);
 }
 
 async function post(store, events) {
-  const text = events.map((e) => `${e.title} ||| ${e.url} ||| ${e.date}`).join("\n");
+  // Wire format: title ||| url ||| date ||| deadline ||| spots
+  // (trailing fields are optional — the Worker tolerates 2- and 3-field lines)
+  const text = events
+    .map((e) => `${e.title} ||| ${e.url} ||| ${e.date || ""} ||| ${e.deadline || ""} ||| ${e.spots || ""}`)
+    .join("\n");
   const body = new URLSearchParams({ name: store.name, uri: `https://tonamel.com/organization/${store.org}?game=${store.game}`, text });
   const resp = await fetch(WEBHOOK_URL, {
     method: "POST",
@@ -167,7 +225,10 @@ for (const store of stores) {
   console.log(`\n${store.name} (${store.org})`);
   try {
     const events = await fetchStore(page, store);
-    console.log(`  captured ${events.length} events; ${events.filter((e) => e.date).length} with dates`);
+    console.log(
+      `  captured ${events.length} events; ${events.filter((e) => e.date).length} with dates, ` +
+        `${events.filter((e) => e.deadline).length} with entry deadlines`
+    );
     if (events.length) await post(store, events);
     else console.log("  (nothing captured — skipping post)");
   } catch (err) {
