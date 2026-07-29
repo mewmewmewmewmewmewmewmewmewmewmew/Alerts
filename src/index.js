@@ -805,9 +805,12 @@ const EVENTS_HTML =
 '.bar input,.bar select{font-family:var(--font-body);font-size:12px;color:var(--ink);' +
 'background:var(--white);border:1px solid var(--grey-300);border-radius:2px;padding:5px 7px}' +
 '.bar input[type=text]{flex:1;min-width:120px}' +
-'.row{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--grey-200);' +
-'border-left:3px solid transparent}' +
-'.row.new{outline:1.5px solid #E8873A;outline-offset:-1.5px}' +
+'.row{position:relative;display:flex;align-items:center;gap:10px;padding:8px 6px;' +
+'border-bottom:1px solid var(--grey-200);border-left:3px solid transparent}' +
+'.row.new::before{content:"";position:absolute;left:-3px;top:0;bottom:0;width:3px;' +
+'background:#E23D28;animation:mewpulse 1.4s ease-in-out infinite}' +
+'@keyframes mewpulse{0%,100%{opacity:1}50%{opacity:0.2}}' +
+'@media(prefers-reduced-motion:reduce){.row.new::before{animation:none}}' +
 '.d{flex:0 0 74px;font-family:var(--font-data);font-size:12px;font-weight:500;color:var(--ink);white-space:nowrap}' +
 '.t{flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
 '.t a{color:var(--ink);text-decoration:none}.t a:hover{color:var(--pink-800);text-decoration:underline}' +
