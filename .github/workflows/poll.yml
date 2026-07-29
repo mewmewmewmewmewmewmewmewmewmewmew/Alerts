@@ -22,8 +22,28 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Install Playwright + Chromium
-        run: npm install playwright@1.48.0 && npx playwright install --with-deps chromium
+      # Cache the Chromium download (~150MB) between runs. Keyed on the
+      # Playwright version so a bump fetches a matching browser.
+      - name: Cache Playwright browser
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-chromium-1.48.0
+
+      # --omit=dev skips this repo's devDependencies (wrangler and its
+      # workerd/esbuild/sharp tree) which the poller never uses; --no-save
+      # keeps package.json untouched.
+      - name: Install Playwright
+        run: npm install --omit=dev --no-save playwright@1.48.0
+
+      - name: Install Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Chromium system deps (cached browser)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
 
       - name: Poll stores and post to the Worker
         env:
