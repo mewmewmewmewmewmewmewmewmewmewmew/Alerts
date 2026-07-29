@@ -1126,14 +1126,14 @@ const EVENTS_HTML =
 'if(om&&!e.matched)return false;' +
 'if(st&&(e.store||"")!==st)return false;' +
 'if(q&&String(e.title||"").toLowerCase().indexOf(q)===-1)return false;return true});' +
-'var cutoff=Date.now()-60*86400000;' +
+'var cutoff=Date.now()-7*86400000;' +
 'var recent=list.filter(function(e){return e.when>=cutoff}).sort(cmp);' +
 'var old=list.filter(function(e){return e.when<cutoff}).sort(cmp);' +
 'var root=document.getElementById("root");root.innerHTML="";' +
 'recent.forEach(function(e){root.appendChild(row(e))});' +
 'var ow=document.getElementById("oldwrap");ow.innerHTML="";' +
 'if(old.length){var det=document.createElement("details");' +
-'det.appendChild(mk("summary",null,"\\ud83d\\uddc4 Older than 2 months ("+old.length+")"));' +
+'det.appendChild(mk("summary",null,"\\ud83d\\uddc4 Past events ("+old.length+")"));' +
 'old.forEach(function(e){det.appendChild(row(e))});ow.appendChild(det)}' +
 'var hs=document.querySelectorAll(".hdr .sortable");' +
 'for(var i=0;i<hs.length;i++){var h=hs[i];' +
