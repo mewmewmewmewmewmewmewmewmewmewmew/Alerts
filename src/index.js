@@ -815,14 +815,15 @@ const EVENTS_HTML =
 'white-space:nowrap;max-width:104px;overflow:hidden;text-overflow:ellipsis}' +
 '.pin{flex:0 0 auto;font-size:11px}' +
 '.dl{flex:0 0 62px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);' +
-'white-space:nowrap;text-align:center;padding:3px 4px;border-radius:2px}' +
+'white-space:nowrap;text-align:center;padding:3px 4px;border-radius:2px;' +
+'background:var(--white);border:1px solid var(--grey-200)}' +
 /* yellow = closing within 3 days, pink fill = already closed */
-'.dl.soon{background:#FFE08A;color:#5C4708;font-weight:500}' +
-'.dl.past{background:var(--pink-800);color:#fff;font-weight:500}' +
+'.dl.soon{background:#FFE08A;border-color:#EFCB6B;color:#5C4708;font-weight:500}' +
+'.dl.past{background:var(--pink-800);border-color:var(--pink-800);color:#fff;font-weight:500}' +
 '.sp{flex:0 0 86px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.sp .a{display:inline-block;width:22px;text-align:right}' +
 '.sp .b{display:inline-block;width:20px;text-align:left}' +
-'.sp .ty{margin-left:5px;color:var(--grey-600)}' +
+'.sp .ty{margin-left:5px}' +
 '.ad{flex:0 0 40px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.mk{flex:0 0 62px;display:flex;gap:10px}' +
 '.mk label{font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);cursor:pointer;' +
@@ -835,7 +836,7 @@ const EVENTS_HTML =
 'text-transform:uppercase;letter-spacing:0.14em}' +
 '.hdr .sortable{cursor:pointer}.hdr .sortable:hover,.hdr .on{color:var(--pink-800)}' +
 '.hdr .s{border:0;padding:0;max-width:none;background:none}' +
-'.hdr .dl{padding:0;text-align:left}' +
+'.hdr .dl{padding:0;text-align:left;background:none;border:0}' +
 'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
 'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
 '#status{color:var(--grey-500);font-size:11px}' +
@@ -869,8 +870,8 @@ const EVENTS_HTML =
 '<span class="ad sortable" data-k="added">Added</span>' +
 '<span class="d sortable" data-k="when">Date</span><span class="t sortable" data-k="title">Event</span>' +
 '<span class="s sortable" data-k="store">Store</span>' +
-'<span class="sp sortable" data-k="entry">Spots &#x30fb; Type</span>' +
-'<span class="mk">K &#x30fb; R</span>' +
+'<span class="sp sortable" data-k="entry">Spots</span>' +
+'<span class="mk"></span>' +
 '<span class="dl sortable" data-k="deadline">Entry &#x3006;</span></div>' +
 '<div id="root"></div><div id="oldwrap"></div>' +
 '<div id="dock"><div id="dockbar">' +
