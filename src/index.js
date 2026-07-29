@@ -1068,7 +1068,7 @@ const EVENTS_HTML =
 '<input id="q" type="text" placeholder="Filter by title\\u2026" autocomplete="off">' +
 '<select id="storeSel"></select>' +
 '<label style="font-size:12px;color:var(--grey-600);display:flex;align-items:center;gap:4px">' +
-'<input type="checkbox" id="onlyMatch">matches only</label></div>' +
+'<input type="checkbox" id="onlyMatch" checked>matches only</label></div>' +
 '<p id="status">Loading&#8230;</p>' +
 '<div class="hdr" id="hdr" style="display:none">' +
 '<span class="d sortable" data-k="when">Date &#x30fb; &#x3006;</span><span class="t sortable" data-k="title">Event</span>' +
@@ -1155,7 +1155,10 @@ const EVENTS_HTML =
 'Object.keys(names).sort().forEach(function(n){sel.appendChild(new Option(shortStore(n),n))});' +
 'document.getElementById("bar").style.display="flex";' +
 'if(ITEMS.length)document.getElementById("hdr").style.display="flex";' +
-'document.getElementById("q").oninput=render;sel.onchange=render;document.getElementById("onlyMatch").onchange=render;' +
+'var om=document.getElementById("onlyMatch");' +
+'try{var sv=localStorage.getItem("mewonly");if(sv!==null)om.checked=(sv==="1")}catch(_e){}' +
+'document.getElementById("q").oninput=render;sel.onchange=render;' +
+'om.onchange=function(){try{localStorage.setItem("mewonly",om.checked?"1":"0")}catch(_e){}render()};' +
 'document.querySelectorAll(".hdr .sortable").forEach(function(h){h.onclick=function(){' +
 'var k=h.getAttribute("data-k");if(SORT.k===k)SORT.dir=-SORT.dir;else{SORT.k=k;SORT.dir=1}' +
 'try{localStorage.setItem("mewsort",JSON.stringify(SORT))}catch(_e){}render()}});' +
