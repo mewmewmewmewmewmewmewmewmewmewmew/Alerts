@@ -468,7 +468,17 @@ async function loadConfig(env) {
   } catch (err) {
     console.log("Config override parse error: " + err);
   }
-  return normalizeConfig(override || seedConfig);
+  // Never let a malformed stored config take the whole board down.
+  try {
+    return normalizeConfig(override || seedConfig);
+  } catch (err) {
+    console.log("Config normalize error, falling back to config.json: " + err);
+    try {
+      return normalizeConfig(seedConfig);
+    } catch (e) {
+      return { ...DEFAULTS };
+    }
+  }
 }
 
 function normalizeConfig(c) {
@@ -496,7 +506,11 @@ function normalizeConfig(c) {
     out.rules = [{ label: "match", include: strArr(c.default.include), color: "#3b82f6" }];
   }
 
-  out.exclude = strArr(c.exclude.length ? c.exclude : c.default && c.default.exclude);
+  // Tolerate the legacy { default:{...}, monitors:{...} } override shape, where
+  // there is no top-level exclude/minChars at all.
+  const rawExclude =
+    Array.isArray(c.exclude) && c.exclude.length ? c.exclude : c.default && c.default.exclude;
+  out.exclude = strArr(rawExclude);
   const mc = c.minChars != null ? c.minChars : c.default && c.default.minChars;
   out.minChars = typeof mc === "number" && isFinite(mc) ? Math.max(0, Math.floor(mc)) : 1;
   return out;
