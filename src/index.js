@@ -943,7 +943,7 @@ const EVENTS_HTML =
 'else if(st==="__pinned__"){if(!e.custom)return false}' +
 'else if(st&&(e.store||"")!==st)return false;' +
 'if(q&&String(e.title||"").toLowerCase().indexOf(q)===-1)return false;return true});' +
-'var cutoff=Date.now()-7*86400000;' +
+'var cutoff=Date.now()-1*86400000;' +
 'var recent=list.filter(function(e){return e.when>=cutoff}).sort(cmp);' +
 'var old=list.filter(function(e){return e.when<cutoff}).sort(cmp);' +
 'var root=document.getElementById("root");root.innerHTML="";' +

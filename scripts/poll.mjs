@@ -127,16 +127,19 @@ function nodesToEvents(edges) {
  */
 async function interceptStore(page, store) {
   const referer = `https://tonamel.com/organization/${store.org}?game=${store.game}`;
-  let captured = null;
+  // Accumulate every page of results, not just the first response: the listing
+  // lazy-loads ~20 at a time, and events we never re-capture can never have
+  // their deadline or spots refreshed.
+  const byId = new Map();
 
   const onResponse = async (resp) => {
-    if (captured) return;
     if (!resp.url().includes("/graphql/competition_management")) return;
     if (resp.status() !== 200) return;
     try {
       const body = await resp.json();
       const edges = body?.data?.organization?.game?.competitions?.edges;
-      if (Array.isArray(edges) && edges.length) captured = edges;
+      if (!Array.isArray(edges)) return;
+      for (const e of edges) if (e?.node?.id) byId.set(e.node.id, e);
     } catch (e) {
       /* not the payload we want */
     }
@@ -145,13 +148,20 @@ async function interceptStore(page, store) {
   page.on("response", onResponse);
   try {
     await page.goto(referer, { waitUntil: "domcontentloaded", timeout: 60000 });
-    // Give the SPA time to issue and receive its data call.
-    for (let i = 0; i < 20 && !captured; i++) await page.waitForTimeout(500);
+    for (let i = 0; i < 20 && byId.size === 0; i++) await page.waitForTimeout(500);
+
+    // Scroll to pull in further pages, stopping once a pass adds nothing.
+    for (let round = 0; round < 12; round++) {
+      const before = byId.size;
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(1500);
+      if (byId.size === before) break;
+    }
   } finally {
     page.off("response", onResponse);
   }
 
-  return captured ? nodesToEvents(captured) : null;
+  return byId.size ? nodesToEvents([...byId.values()]) : null;
 }
 
 async function fetchStoreViaOwnRequest(page, store) {
