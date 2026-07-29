@@ -12,13 +12,8 @@ compatibility_date = "2025-01-01"
 binding = "MEW_STATE"
 id = "043a700a0872448c9d0e03c7cc016196"
 
-# Cron trigger — runs the Tonamel poller (scheduled handler) every 5 minutes.
-[triggers]
-crons = ["*/5 * * * *"]
-
-# LINE_TOKEN, GROUP_ID and ADMIN_PASSWORD are SECRETS — do not put them here.
-# Set them with:
-#   npx wrangler secret put LINE_TOKEN
-#   npx wrangler secret put GROUP_ID
-#   npx wrangler secret put ADMIN_PASSWORD   # enables the /admin filter editor
-# (or in the Cloudflare dashboard: Worker ▸ Settings ▸ Variables and Secrets)
+# Secrets — do not put values here. Set with `npx wrangler secret put <NAME>`
+# or in the dashboard (Worker ▸ Settings ▸ Variables and Secrets):
+#   LINE_TOKEN           LINE Messaging API channel access token
+#   GROUP_ID             LINE group/user id to push to
+#   LINE_CHANNEL_SECRET  verifies /line webhook signatures (chat pinning)

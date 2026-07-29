@@ -1,297 +1,155 @@
-# Mew Alerts — Distill.io → LINE relay
+# Mew Alerts
 
-A **Cloudflare Worker** that turns Distill.io's "something changed" pings into
-**precise, filtered** LINE alerts that tell you *exactly* what changed.
+Tracks Pokémon-card event listings across 晴れる屋2 stores on
+[Tonamel](https://tonamel.com), pushes a **LINE alert for genuinely new events
+that match your filters**, and keeps a shared **event board** you and a friend
+can tick off.
 
-## Why this exists
-
-Distill's webhook only sends the **current** text of the watched element
-(`{{sieve_data.text}}`) plus a name, URL and timestamp. It has **no "old value"
-and no diff**. The original relay just reprinted the whole current blob, so you
-couldn't see what changed and every ping became a message.
-
-This version makes the Worker the brain: it remembers state and does the work.
-
-| Problem (before)                     | Fix (now)                                             |
-| ------------------------------------ | ----------------------------------------------------- |
-| Dumps the entire current text        | Stores the previous snapshot (KV) and shows the diff  |
-| Can't tell what changed              | `➕ Added` / `➖ Removed` lines, or `old → new`          |
-| No filtering — every ping alerts     | Include / exclude keywords + min-change threshold     |
-| Repeat pings spam you                | Dedupes identical + whitespace-only changes           |
-| A bare hit to the URL sends an alert | Ignores empty / test hits                             |
-| First-ever ping alerts on nothing    | First ping just records a silent baseline             |
-
-## Architecture
+## How it works
 
 ```
-Distill (browser ext) ──HTTPS webhook──▶ Cloudflare Worker ──push──▶ LINE
-                                              │
-                                              ├─ KV: previous snapshot per monitor
-                                              └─ config.json: filter rules (in this repo)
+GitHub Actions (every 30 min)          Cloudflare Worker              LINE
+  Playwright opens each store   ──▶   dedupe vs. seen        ──push──▶ group
+  page, captures its events            filter by rules
+                                       store for the board
+                                            │
+                                       /events  ← board (list, K/R marks)
+                                       /line    ← paste a link in chat to pin it
 ```
 
-Filter rules live in **`config.json`** (committed here, so they're
-version-controlled and editable via pull request). Secrets live in Cloudflare.
+Nothing runs on your machine and nothing needs a subscription: Actions is free
+for public repos, and the Worker runs on Cloudflare's free tier.
 
 ## Files
 
-| Path                  | What it is                                             |
-| --------------------- | ------------------------------------------------------ |
-| `src/index.js`        | The Worker (payload parsing, diff, filter, LINE push)  |
-| `config.json`         | Filter rules — defaults + per-monitor overrides        |
-| `wrangler.toml`       | Worker config + KV binding                              |
-| `apps-script/Code.gs` | Legacy Google Apps Script version (reference / fallback)|
+| Path                     | What it is                                             |
+| ------------------------ | ------------------------------------------------------ |
+| `scripts/poll.mjs`       | The poller — opens each store, extracts events, posts   |
+| `scripts/stores.json`    | Which stores to watch                                   |
+| `.github/workflows/poll.yml` | Schedule (every 30 min) + manual **Run workflow**   |
+| `src/index.js`           | The Worker — dedupe, filter, LINE push, event board      |
+| `config.json`            | Committed filter rules (overridable from the board)      |
+| `wrangler.toml`          | Worker config + KV binding                               |
+| `apps-script/Code.gs`    | The original Apps Script relay (historical reference)    |
 
-## One-time setup
+## Capture: three ways in, in order
 
-You need a free Cloudflare account. Two ways to deploy:
+Tonamel is a JS-rendered SPA whose GraphQL API returns **403 to non-browser
+callers**, so `poll.mjs` drives a real Chromium and tries, in order:
 
-### Option A — Deploy from the CLI (fastest to get running)
+1. **Intercept the page's own API response** — the SPA's request succeeds where
+   ours is refused, and carries entry deadlines and entrant counts.
+2. **Issue the GraphQL request from inside the page** — same data if allowed.
+3. **Scrape the rendered DOM** — titles, links and dates only.
 
-```bash
-npm install
-npx wrangler login
+Each run logs which path it used, plus how many events had dates and deadlines.
 
-# 1. Create the KV namespace, then paste the printed id into wrangler.toml
-npx wrangler kv namespace create MEW_STATE
+## Adding a store
 
-# 2. Store your secrets (never commit these)
-npx wrangler secret put LINE_TOKEN      # paste your LINE channel access token
-npx wrangler secret put GROUP_ID        # paste your LINE group/user id
-npx wrangler secret put ADMIN_PASSWORD  # any strong password, for the /admin page
+Add an entry to `scripts/stores.json` and push:
 
-# 3. Ship it
-npm run deploy
+```json
+{ "name": "晴れる屋2 events @ 大宮", "org": "QB6TF", "game": "pokemon_card" }
 ```
 
-`wrangler deploy` prints your Worker URL, e.g.
-`https://mew-alerts.<subdomain>.workers.dev` — that's your new webhook URL.
+`org` is the id in `tonamel.com/organization/<org>?game=<game>`. The `name` is
+the key for the board and stored state — **don't rename an existing store**, or
+it re-baselines and shows up twice.
 
-### Option B — Auto-deploy from GitHub (no more copy-paste)
+## The event board (`/events`)
 
-In the Cloudflare dashboard: **Workers & Pages → Create → Connect to Git**,
-pick this repo. Cloudflare runs `wrangler deploy` on every push to the branch.
-Then set the KV namespace + the `LINE_TOKEN` / `GROUP_ID` / `ADMIN_PASSWORD`
-secrets in **Worker → Settings → Variables and Secrets**. After this, every
-commit here deploys itself.
+One chronological list: upcoming events plus the last 7 days, with older ones
+folded into a **Past events** section. Columns are sortable (click a header) and
+there's a search box and a store/category picker.
 
-## Point Distill at the new URL
+- **K / R checkboxes** mark who entered. They're stored server-side, so both of
+  you see the same state from any device.
+- **Entry 〆** shows when registration closes — pink within 3 days, **red once
+  it has passed**.
+- **Spots** shows entrants/capacity, refreshed every poll.
+- **📌 Pinned** rows come from the LINE chat (below).
 
-In Distill's **Webhook** action, set the URL to your Worker URL and send these
-params (query params or JSON body both work):
+## Changing filters
 
-| Param  | Value                  |
-| ------ | ---------------------- |
-| `name` | `{{sieve.name}}`       |
-| `text` | `{{sieve_data.text}}`  |
-| `uri`  | `{{sieve.uri}}`        |
-| `ts`   | `{{sieve_data.ts}}`    |
+Click **⚙ Filters** at the bottom of the board. Filters are a list of **rules**,
+each with its own highlight colour:
 
-> The cleaner your Distill **selector** (just the price, just the stock label),
-> the cleaner the diff. Broad selectors that grab a whole page = noisy diffs.
+| Field | Meaning |
+| ----- | ------- |
+| keywords | comma-separated; a title containing any of them matches this rule |
+| colour | row tint + left border for events matching this rule |
+| Ignore if title contains | global — always wins over every rule |
 
-The first ping per monitor records a silent baseline (no alert); every change
-after that is diffed against it.
+An event alerts if it matches **any** rule and no ignore keyword. Saving writes
+an override into KV that takes precedence over `config.json` and applies
+immediately — the board re-colours on save, and alerts use the new rules on the
+next capture.
 
-## Changing filters — the admin page
+> Matching is literal substring. `学生以下限定` covers 小学生以下限定 and
+> 中学生以下限定 but **not** 高校生以下限定 (that word is 高+校生+以下限定) —
+> use `以下限定` to catch every age-restricted variant.
 
-There are **two** ways to change filters, and they layer:
-
-1. **`config.json`** (this repo) = the committed *defaults*. Edit + push (or ask
-   Claude to) and it redeploys. Good for the baseline rules.
-2. **`/admin`** = a live editor that writes a *runtime override* into KV. Changes
-   take effect on the very next ping — **no redeploy**.
-
-Open `https://mew-alerts.<subdomain>.workers.dev/admin`, enter your
-`ADMIN_PASSWORD`, and you get a form (mobile-friendly) to:
-
-- edit the **Default** rules (apply to every monitor),
-- add a **per-monitor override** (it lists monitors it has already seen so you
-  can pick one), toggling include/exclude keywords, min-change size, or muting.
-
-Effective rule for a monitor = `DEFAULTS` → `config.json` default → KV override
-default → `config.json` monitor → KV override monitor (later wins). To fall back
-to the committed `config.json`, delete the `config::override` KV key.
-
-> The `/admin` page HTML is public, but every read/write requires the password
-> (checked server-side). Use a long random `ADMIN_PASSWORD`.
-
-## Filter fields (`config.json` and the admin form)
-
-A `default` block plus optional per-monitor overrides keyed by the exact Distill
-monitor name:
+Committed defaults live in `config.json`:
 
 ```json
 {
-  "default": {
-    "exclude": ["cookie", "advertisement", "loading"],
-    "minChars": 2
-  },
-  "monitors": {
-    "Sneaker Restock": {
-      "include": ["in stock", "restock", "available"],
-      "exclude": ["sold out"]
-    },
-    "Price Watch": {
-      "minChars": 1
-    }
-  }
+  "rules": [
+    { "label": "スタートデッキ", "include": ["スタートデッキ"], "color": "#3b82f6" },
+    { "label": "開封", "include": ["開封"], "color": "#FF4D9D" }
+  ],
+  "exclude": ["学生以下限定"],
+  "minChars": 1
 }
 ```
 
-Fields (all optional):
+## Pinning links from the LINE chat
 
-- **`include`** — if set, alert only when a changed line contains one of these
-  (case-insensitive). Use it to alert *only* on the events you care about.
-- **`exclude`** — changed lines containing any of these are dropped as noise
-  before deciding whether to alert.
-- **`minChars`** — ignore changes smaller than this many characters.
-- **`enabled`** — set `false` to mute a monitor without deleting it.
-
-## GitHub Actions poller (replaces Distill — recommended)
-
-`scripts/poll.mjs` + `.github/workflows/poll.yml` do what Distill did, for free:
-a scheduled GitHub Action launches real Chromium (Playwright), opens each store
-page so the request has a genuine browser context, then calls Tonamel's GraphQL
-API **from inside the page** — which gets past the 403 that blocks server-side
-calls. It posts `title ||| url ||| date` per store to the Worker, exactly the
-format the linked-capture path already expects, so alerts, the event board,
-filters and K/R marks all keep working unchanged.
-
-Why it beats the browser-extension route: no selectors to maintain, dates come
-from the API's own timestamps (`tournaments[0].displayStartAt`, formatted in
-JST), no per-store UI clicking, and no monthly credits.
-
-**Setup**
-1. Repo → Settings → Secrets and variables → Actions → New repository secret:
-   `WEBHOOK_URL` = your Worker base URL (e.g. `https://<worker>.workers.dev`).
-2. Edit `scripts/stores.json` to list the stores to watch — each entry is
-   `{ "name": "<monitor name>", "org": "<orgId>", "game": "pokemon_card" }`.
-   The `name` must match the monitor name your filters use; `org` is the id in
-   `tonamel.com/organization/<org>?game=…`.
-3. Actions tab → **Poll Tonamel** → **Run workflow** to trigger it once, then it
-   runs on the schedule (default every 30 min; edit the cron in the workflow).
-
-Note: GitHub's scheduled runs are best-effort and can lag at busy times; the
-`workflow_dispatch` button always runs immediately.
-
-## Linked capture — per-event links via a Distill JS selector (legacy)
-
-Tonamel's page is a JS-rendered SPA and its GraphQL API returns **403 to
-non-browser IPs** (so the scheduled poller below can't reach it from Cloudflare).
-The robust workaround runs the fetch where it already works — your browser —
-using a Distill **JavaScript selector** that emits `title ||| url` per line:
-
-```js
-Array.from(document.querySelectorAll('li.competition-item a.nuxt-link')).map(function (a) {
-  var t = a.querySelector('.title');
-  return (t ? t.textContent.trim() : a.textContent.trim().split('\n')[0]) + ' ||| ' + a.href;
-}).join('\n')
-```
-
-Distill posts that to the Worker like any other monitor. When the Worker sees
-the ` ||| ` delimiter it parses each line into `{title, url}`, filters titles by
-the monitor's `include`/`exclude` (from `config.json` / the admin page), diffs
-new URLs against a `linked::<monitor name>` KV baseline, and alerts on each new
-matching event **with its own link**:
+Paste any link into the group — optionally with a note and a date — and the bot
+pins it to the board and replies to confirm:
 
 ```
-🐱 Mew Alert! — new event
-
-📅 晴れる屋2 events @ 秋葉原
-
-🎯 スタートデッキ100対戦会【16時の部】
-🔗 https://tonamel.com/competition/PgrEh
+シティリーグ抽選 締切7/26 https://example.com/raffle
 ```
 
-## Tonamel poller (scheduled GraphQL — parked)
+The note becomes the title and the date becomes its deadline (`7/26`, `締切8/2`,
+`8月2日`, `2026/8/2` all parse; the year is inferred). **Replies are free** — they
+don't consume the monthly push quota, so this works even when alerts are capped.
 
-> ⚠️ Disabled by default (`tonamel.enabled: false`): tonamel's edge returns a
-> 403 to server-side callers, so this path only works from an allowed IP (e.g.
-> via a residential proxy). Kept for reference / future use. The linked-capture
-> path above is what's actually in use.
+One-time setup: add the `LINE_CHANNEL_SECRET` secret in Cloudflare, then in the
+LINE Developers Console set the webhook URL to `https://<worker>/line` and
+enable **Use webhook**.
 
-For sites whose API *is* reachable, the Worker can query GraphQL directly on a
-schedule (cron in `wrangler.toml`, default every 5 min), filter by keyword on
-the title, and alert on each **new** matching event with its own link and spot
-count:
+## Alerts and the LINE quota
 
-```
-🐱 Mew Alert! — new event
+The free LINE Messaging API plan allows **200 pushes/month**. When it runs out
+the Worker logs `LINE FAILED (429)` and **leaves those events unseen so they
+retry on the next capture** — nothing is lost, it just waits for the reset.
+Everything still reaches the board meanwhile.
 
-📅 晴れる屋2 events @ 秋葉原
+## Diagnostics (`/health`)
 
-🎯 スタートデッキ100対戦会【16時の部】
-👥 29/30
-🔗 https://tonamel.com/competition/PgrEh
-```
+`GET /health` returns the last 50 decisions, newest first — `Baseline`,
+`No new`, `Sent 3: …`, or `LINE FAILED (429): …`. This is the first place to
+look when an alert didn't arrive.
 
-Configured under the `tonamel` block in `config.json`:
+## Deploying
 
-```json
-"tonamel": {
-  "enabled": true,
-  "monitors": [
-    {
-      "name": "晴れる屋2 events @ 秋葉原",
-      "organizationId": "rmQjT",
-      "gameId": "pokemon_card",
-      "include": ["スタートデッキ", "ボックス開封"],
-      "exclude": ["小学生以下限定"]
-    }
-  ]
-}
-```
+The Worker auto-deploys from this repo (Cloudflare → Workers → connected to
+Git). Secrets live in **Worker → Settings → Variables and Secrets**:
+`LINE_TOKEN`, `GROUP_ID`, `LINE_CHANNEL_SECRET`. The poller needs one repo
+secret, `WEBHOOK_URL`, pointing at the Worker.
 
-- `organizationId` / `gameId` come from the page URL
-  (`tonamel.com/organization/<organizationId>?game=<gameId>`).
-- `include` / `exclude` match against the event **title** (case-insensitive
-  substring). Keyword matching is literal — `ボックス開封` will not match a title
-  written `BOX開封`; add both spellings if you want to catch either.
-- First poll records a silent baseline; after that, only genuinely new matching
-  events alert. State is keyed `tonamel::<organizationId>::<gameId>` in KV.
-
-**Test it without waiting for the cron:** `GET /poll?key=<ADMIN_PASSWORD>` runs
-all Tonamel monitors immediately and returns a JSON summary of what it did.
-
-## Event board (`/events`)
-
-A public read-only page listing every event the monitors have captured,
-grouped by store — matches highlighted, dates and links included. Backed by
-`events::store::<name>` keys that update on every check.
-
-**Pin custom events from the LINE chat:** paste any link (optionally with a
-note) into the group and the bot pins it to the board's 📌 section and replies
-a confirmation. Replies are free — they don't consume the monthly push quota.
-Removing a pinned event (✕ on the board) asks for `ADMIN_PASSWORD`.
-
-One-time LINE setup for chat pinning:
-1. Cloudflare → Worker → add secret `LINE_CHANNEL_SECRET` (from LINE Developers
-   Console → channel → Basic settings). Used to verify webhook signatures.
-2. LINE Developers Console → Messaging API → set **Webhook URL** to
-   `https://<worker>/line`, enable **Use webhook**.
-3. In LINE Official Account Manager → Response settings: enable webhooks,
-   disable auto-reply.
-
-## Diagnostics (`/admin/health`)
-
-`GET /admin/health?pw=<ADMIN_PASSWORD>` returns the last 50 webhook decisions
-(`Baseline` / `No new` / `Sent …` / `LINE FAILED (status)…`), newest first.
-Failed LINE pushes are retried on the next check — events are only marked
-seen after LINE accepts the message.
-
-## Local development & logs
-
-```bash
-npm run dev     # run the Worker locally (wrangler dev)
-npm run tail    # live-stream production logs (wrangler tail)
-```
-
-Every hit logs why it did or didn't alert: `Baseline`, `No change`,
-`Filtered`, `Sent`, …
+From a checkout you can also run `npm run deploy`, `npm run dev`, or
+`npm run tail` (live Worker logs).
 
 ## Resetting state
 
-To re-baseline a monitor, delete its KV key (key format `state::<monitor name>`)
-from the Cloudflare dashboard (**Worker → KV**) or via
-`npx wrangler kv key delete --binding MEW_STATE "state::<name>"`.
+State lives in KV (Cloudflare → Storage → KV → `mew-state`):
+
+| Key | Holds |
+| --- | ----- |
+| `linked::<store>` | URLs already alerted on — delete to re-baseline that store |
+| `events::store::<store>` | The board's event records |
+| `events::custom` | Chat-pinned links |
+| `events::marks` | K/R checkmarks |
+| `config::override` | Filters saved from the board (delete to fall back to `config.json`) |

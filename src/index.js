@@ -1,29 +1,34 @@
 /**
- * Mew Alerts — Distill.io → LINE relay (Cloudflare Worker)
- * --------------------------------------------------------
- * Distill only sends the CURRENT text of a watched element — no old value,
- * no diff. This Worker remembers the previous snapshot per monitor (KV),
- * computes the exact diff, filters it, and pushes a LINE message.
+ * Mew Alerts — event tracker (Cloudflare Worker)
+ * ---------------------------------------------
+ * Receives event captures (from scripts/poll.mjs, or any webhook posting
+ * "title ||| url ||| date ||| deadline ||| spots" lines), remembers what it
+ * has already seen, and pushes a LINE message for genuinely new events that
+ * match a filter rule. Also serves the event board.
  *
  * Routes:
- *   /            → Distill webhook (GET or POST)
- *   /admin       → password-protected filter editor (HTML)
- *   /admin/config→ GET current effective config + detected monitors (JSON)
- *   /admin/save  → POST new filter config to KV (JSON)
+ *   /               → capture webhook (GET or POST)
+ *   /events         → the board (list, filters, K/R marks)
+ *   /events/data    → board data + effective filter (JSON)
+ *   /events/config  → GET effective filter; POST to save one
+ *   /events/mark    → toggle a K/R "entered" checkmark
+ *   /events/remove  → drop a chat-pinned link
+ *   /line           → LINE webhook: paste a link in chat to pin it
+ *   /health         → recent decisions (why an alert did or didn't fire)
  *
  * Bindings / secrets (set in Cloudflare, NOT in the repo):
- *   env.MEW_STATE      — KV namespace (snapshots + filter overrides)
- *   env.LINE_TOKEN     — LINE Messaging API channel access token   (secret)
- *   env.GROUP_ID       — LINE group/user id to push to             (secret)
- *   env.ADMIN_PASSWORD — password for the /admin page              (secret)
+ *   env.MEW_STATE           — KV namespace (state, events, marks, filters)
+ *   env.LINE_TOKEN          — LINE Messaging API channel access token
+ *   env.GROUP_ID            — LINE group/user id to push to
+ *   env.LINE_CHANNEL_SECRET — verifies LINE webhook signatures
  *
- * config.json holds the committed default filter rules; the /admin page writes
- * a runtime override into KV that takes precedence (no redeploy needed).
+ * config.json holds the committed filter rules; saving from the board writes
+ * an override into KV that takes precedence (no redeploy needed).
  */
 
 import seedConfig from "../config.json";
 
-const DEFAULTS = { include: [], exclude: [], minChars: 1, enabled: true };
+const DEFAULTS = { rules: [], exclude: [], minChars: 1 };
 const CONFIG_KEY = "config::override";
 const STATE_PREFIX = "state::";
 const LINK_DELIM = " ||| "; // separates title and url in a linked capture
@@ -33,13 +38,13 @@ const DIAG_KEY = "diag::recent"; // ring buffer of recent webhook decisions
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
-      return handleAdmin(request, env, url);
+    // Diagnostics: recent webhook decisions (why an alert did or didn't fire).
+    if (url.pathname === "/health" || url.pathname === "/admin/health") {
+      let recent = [];
+      try { recent = JSON.parse((await env.MEW_STATE.get(DIAG_KEY)) || "[]"); } catch (e) { recent = []; }
+      return json({ recent });
     }
-    // Manual trigger for the Tonamel poller (handy for testing): /poll
-    if (url.pathname === "/poll") {
-      return handlePollTrigger(request, env, url);
-    }
+    if (url.pathname === "/events/config") return handleEventsConfig(request, env);
     // Public event board + its data / management endpoints.
     if (url.pathname === "/events") return html(EVENTS_HTML);
     if (url.pathname === "/events/data") return handleEventsData(env);
@@ -50,10 +55,6 @@ export default {
     return handleWebhook(request, env);
   },
 
-  // Cron entrypoint — polls the Tonamel GraphQL API for new matching events.
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(runTonamelPolls(env));
-  },
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -69,12 +70,10 @@ async function handleWebhook(request, env) {
     const uri = incoming.uri || "";
     const ts = incoming.ts || "";
 
-    const cfgAll = await loadConfig(env);
-    const cfg = pickMonitorConfig(cfgAll, name);
-    if (cfg.enabled === false) return text("Muted");
+    const cfg = await loadConfig(env);
 
-    // Linked format: a Distill JavaScript selector emitting "title ||| url" per
-    // line. Parse into items, filter by title, alert new ones with their link.
+    // Linked format: "title ||| url ||| date ||| deadline ||| spots" per line.
+    // Parse into items, filter by title, alert new ones with their link.
     if (body.includes(LINK_DELIM)) {
       return handleLinkedWebhook(env, name, body, cfg);
     }
@@ -216,7 +215,8 @@ function computeDiff(oldText, newText) {
 // ── Filtering ───────────────────────────────────────────────────────────────
 function applyFilters(diff, cfg) {
   const exclude = (cfg.exclude || []).map(lc);
-  const include = (cfg.include || []).map(lc);
+  // Legacy line-diff path: treat every rule's keywords as one include list.
+  const include = (cfg.rules || []).flatMap((r) => r.include || []).map(lc);
 
   const notExcluded = (line) => {
     if (!exclude.length) return true;
@@ -340,9 +340,7 @@ async function handleLinkedWebhook(env, name, body, cfg) {
   // Some pages render the list more than once (responsive/duplicate DOM), so
   // dedupe by URL before doing anything else.
   const items = dedupeByUrl(parseLinkedItems(body));
-  const inc = (cfg.include || []).map(lc);
-  const exc = (cfg.exclude || []).map(lc);
-  const matching = items.filter((it) => matchTitle(it.title, inc, exc));
+  const matching = items.filter((it) => matchRule(it.title, cfg) !== null);
 
   // Keep the event board up to date with everything captured (not just matches).
   await upsertStoreEvents(env, name, items, new Set(matching.map((it) => it.url)));
@@ -457,139 +455,64 @@ async function logDecision(env, name, msg) {
 // ════════════════════════════════════════════════════════════════════════════
 // Config (seed from config.json, overridden by KV)
 // ════════════════════════════════════════════════════════════════════════════
+/**
+ * Effective filter = config.json, replaced wholesale by a KV override if one
+ * has been saved from the board. Shape: { rules:[{label,include[],color}],
+ * exclude:[], minChars }.
+ */
 async function loadConfig(env) {
-  let override = {};
+  let override = null;
   try {
     const raw = await env.MEW_STATE.get(CONFIG_KEY);
     if (raw) override = JSON.parse(raw);
   } catch (err) {
     console.log("Config override parse error: " + err);
   }
-  return mergeConfig(seedConfig, override);
+  return normalizeConfig(override || seedConfig);
 }
 
-function mergeConfig(base, over) {
-  const out = {
-    default: { ...(base && base.default) },
-    monitors: { ...(base && base.monitors) },
-    tonamel: base && base.tonamel ? base.tonamel : undefined,
-  };
-  if (over && over.default) Object.assign(out.default, over.default);
-  if (over && over.monitors) {
-    for (const k of Object.keys(over.monitors)) out.monitors[k] = over.monitors[k];
-  }
-  if (over && over.tonamel) out.tonamel = over.tonamel;
-  return out;
-}
+function normalizeConfig(c) {
+  const out = { rules: [], exclude: [], minChars: 1 };
+  if (!c || typeof c !== "object") return out;
 
-function pickMonitorConfig(cfgAll, name) {
-  const c = { ...DEFAULTS, ...(cfgAll.default || {}) };
-  if (cfgAll.monitors && cfgAll.monitors[name]) Object.assign(c, cfgAll.monitors[name]);
-  return c;
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// Admin page
-// ════════════════════════════════════════════════════════════════════════════
-async function handleAdmin(request, env, url) {
-  if (!env.ADMIN_PASSWORD) {
-    return text("Admin disabled: set the ADMIN_PASSWORD secret to enable the filter editor.", 503);
-  }
-
-  const sub = url.pathname.slice("/admin".length) || "/";
-
-  // The page itself is public HTML; the API endpoints below require the password.
-  if (request.method === "GET" && (sub === "/" || sub === "")) {
-    return html(ADMIN_HTML);
-  }
-
-  const pw =
-    request.headers.get("x-admin-password") || url.searchParams.get("pw") || "";
-  if (!safeEqual(pw, env.ADMIN_PASSWORD)) {
-    return json({ error: "unauthorized" }, 401);
-  }
-
-  if (request.method === "GET" && sub === "/config") {
-    const config = await loadConfig(env);
-    const monitors = await listMonitors(env);
-    return json({ config, monitors });
-  }
-
-  if (request.method === "GET" && sub === "/health") {
-    let recent = [];
-    try { recent = JSON.parse((await env.MEW_STATE.get(DIAG_KEY)) || "[]"); } catch (e) { recent = []; }
-    return json({ recent });
-  }
-
-  if (request.method === "POST" && sub === "/save") {
-    let body;
-    try {
-      body = await request.json();
-    } catch (err) {
-      return json({ error: "invalid JSON" }, 400);
-    }
-    const clean = sanitizeConfig(body);
-    if (!clean) return json({ error: "invalid config shape" }, 400);
-    await env.MEW_STATE.put(CONFIG_KEY, JSON.stringify(clean));
-    return json({ ok: true, config: clean });
-  }
-
-  return json({ error: "not found" }, 404);
-}
-
-async function listMonitors(env) {
-  const names = new Set();
-  try {
-    for (const prefix of [STATE_PREFIX, LINKED_PREFIX]) {
-      let cursor;
-      do {
-        const res = await env.MEW_STATE.list({ prefix, cursor });
-        for (const k of res.keys) names.add(k.name.slice(prefix.length));
-        cursor = res.list_complete ? undefined : res.cursor;
-      } while (cursor);
-    }
-  } catch (err) {
-    console.log("listMonitors error: " + err);
-  }
-  return Array.from(names).sort();
-}
-
-function sanitizeBlock(b) {
-  const o = {};
-  const arr = (v) =>
+  const strArr = (v) =>
     Array.isArray(v) ? v.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 100) : [];
-  if (Array.isArray(b.include)) o.include = arr(b.include);
-  if (Array.isArray(b.exclude)) o.exclude = arr(b.exclude);
-  if (typeof b.minChars === "number" && isFinite(b.minChars)) {
-    o.minChars = Math.max(0, Math.floor(b.minChars));
-  }
-  if (typeof b.enabled === "boolean") o.enabled = b.enabled;
-  return o;
-}
 
-function sanitizeConfig(body) {
-  if (!body || typeof body !== "object") return null;
-  const out = { default: {}, monitors: {} };
-  if (body.default && typeof body.default === "object") out.default = sanitizeBlock(body.default);
-  if (body.monitors && typeof body.monitors === "object") {
-    for (const name of Object.keys(body.monitors).slice(0, 200)) {
-      const blk = body.monitors[name];
-      if (typeof name === "string" && name.length <= 200 && blk && typeof blk === "object") {
-        out.monitors[name] = sanitizeBlock(blk);
-      }
-    }
+  if (Array.isArray(c.rules)) {
+    out.rules = c.rules
+      .filter((r) => r && typeof r === "object")
+      .slice(0, 20)
+      .map((r) => {
+        const include = strArr(r.include);
+        return {
+          label: String(r.label || include[0] || "rule").slice(0, 40),
+          include,
+          color: /^#[0-9a-fA-F]{6}$/.test(String(r.color || "")) ? r.color : "#3b82f6",
+        };
+      })
+      .filter((r) => r.include.length);
+  } else if (c.default && Array.isArray(c.default.include) && c.default.include.length) {
+    // Migrate the older single-filter shape into one rule.
+    out.rules = [{ label: "match", include: strArr(c.default.include), color: "#3b82f6" }];
   }
+
+  out.exclude = strArr(c.exclude.length ? c.exclude : c.default && c.default.exclude);
+  const mc = c.minChars != null ? c.minChars : c.default && c.default.minChars;
+  out.minChars = typeof mc === "number" && isFinite(mc) ? Math.max(0, Math.floor(mc)) : 1;
   return out;
 }
 
-function safeEqual(a, b) {
-  a = String(a);
-  b = String(b);
-  if (a.length !== b.length) return false;
-  let r = 0;
-  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return r === 0;
+/** First rule whose keywords appear in the title, or null. Excludes win. */
+function matchRule(title, cfg) {
+  const t = lc(title);
+  if (!t) return null;
+  if ((cfg.exclude || []).some((k) => t.includes(lc(k)))) return null;
+  for (const r of cfg.rules || []) {
+    if (r.include.some((k) => t.includes(lc(k)))) return r;
+  }
+  return null;
 }
+
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function cap(s) {
@@ -617,219 +540,6 @@ function html(body, status = 200) {
       "cache-control": "no-store",
     },
   });
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// Tonamel poller — queries the GraphQL API directly for new matching events.
-// Configured via the "tonamel" block in config.json. Runs on the cron trigger
-// (see wrangler.toml) and can be fired manually via GET /poll?key=ADMIN_PASSWORD.
-// ════════════════════════════════════════════════════════════════════════════
-const TONAMEL_ENDPOINT = "https://tonamel.com/graphql/competition_management";
-// Exact query the site sends (proven to be accepted by the endpoint).
-const TONAMEL_QUERY = `query getOrganizationGameCompetitions($organizationId: ID!, $gameId: ID!, $filter: CompetitionsFilter!) {
-  organization(id: $organizationId) {
-    id
-    game(id: $gameId) {
-      game { id __typename }
-      competitions(filter: $filter) {
-        edges { cursor node { ...CompetitionFragment __typename } __typename }
-        pageInfo { startCursor endCursor hasNextPage hasPreviousPage __typename }
-        __typename
-      }
-      __typename
-    }
-    __typename
-  }
-}
-
-fragment CompetitionFragment on Competition {
-  id
-  title
-  status
-  useMultiPhaseTournament
-  entryMenus {
-    id
-    status
-    participantChosenNum
-    countSummary { currentEntrantNum __typename }
-    __typename
-  }
-  publicStatus
-  region
-  __typename
-}`;
-
-async function handlePollTrigger(request, env, url) {
-  // Password-gate the manual trigger (reuse ADMIN_PASSWORD).
-  const key = url.searchParams.get("key") || "";
-  if (!env.ADMIN_PASSWORD || !safeEqual(key, env.ADMIN_PASSWORD)) {
-    return text("unauthorized", 401);
-  }
-  const summary = await runTonamelPolls(env);
-  return json({ ok: true, ran: summary });
-}
-
-async function runTonamelPolls(env) {
-  const cfgAll = await loadConfig(env);
-  const t = cfgAll.tonamel;
-  if (!t || t.enabled === false || !Array.isArray(t.monitors)) return [];
-
-  const summary = [];
-  for (const mon of t.monitors) {
-    try {
-      summary.push(await pollTonamelMonitor(env, mon));
-    } catch (err) {
-      console.log("Tonamel poll error for " + (mon && mon.name) + ": " + (err && err.stack ? err.stack : err));
-      summary.push({ name: mon && mon.name, error: String(err) });
-    }
-  }
-  return summary;
-}
-
-async function pollTonamelMonitor(env, mon) {
-  const res = await fetchTonamelCompetitions(mon.organizationId, mon.gameId);
-  if (!res.events) return { name: mon.name, error: res.error || "fetch failed (see logs)" };
-  const events = res.events;
-
-  const inc = (mon.include || []).map((s) => s.toLowerCase());
-  const exc = (mon.exclude || []).map((s) => s.toLowerCase());
-  const matching = events.filter((e) => matchTitle(e.title, inc, exc));
-
-  const key = "tonamel::" + mon.organizationId + "::" + mon.gameId;
-  const raw = await env.MEW_STATE.get(key);
-  const currentIds = matching.map((e) => e.id);
-
-  // First run: record a silent baseline so we don't alert on the whole list.
-  if (raw === null) {
-    await env.MEW_STATE.put(key, JSON.stringify(currentIds));
-    console.log("Tonamel baseline for " + mon.name + " (" + matching.length + " matching)");
-    return { name: mon.name, baseline: matching.length };
-  }
-
-  let seen = [];
-  try { seen = JSON.parse(raw) || []; } catch (e) { seen = []; }
-  const seenSet = new Set(seen);
-  const fresh = matching.filter((e) => !seenSet.has(e.id));
-
-  // Advance state regardless.
-  await env.MEW_STATE.put(key, JSON.stringify(currentIds));
-
-  if (!fresh.length) {
-    console.log("Tonamel " + mon.name + ": no new matches (" + matching.length + " matching total)");
-    return { name: mon.name, matching: matching.length, new: 0 };
-  }
-
-  await sendToLine(env, buildTonamelMessage(mon.name, fresh));
-  console.log("Tonamel " + mon.name + ": alerted " + fresh.length + " new event(s)");
-  return { name: mon.name, new: fresh.length, titles: fresh.map((e) => e.title) };
-}
-
-function matchTitle(title, inc, exc) {
-  const t = (title || "").toLowerCase();
-  if (exc.length && exc.some((k) => t.includes(k))) return false;
-  if (inc.length && !inc.some((k) => t.includes(k))) return false;
-  return true;
-}
-
-async function fetchTonamelCompetitions(orgId, gameId) {
-  const payload = {
-    operationName: "getOrganizationGameCompetitions",
-    variables: {
-      organizationId: orgId,
-      gameId: gameId,
-      filter: { first: 0, last: 20, before: "", after: "" },
-    },
-    query: TONAMEL_QUERY,
-  };
-
-  const referer = "https://tonamel.com/organization/" + orgId + "?game=" + gameId;
-  let resp;
-  try {
-    resp = await fetch(TONAMEL_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        origin: "https://tonamel.com",
-        referer: referer,
-        // Many endpoints gate on the mere presence of these custom headers.
-        "x-csrf-token": crypto.randomUUID().toUpperCase(),
-        "x-page-view-id": crypto.randomUUID(),
-        "x-page-view-location": referer,
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        "user-agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      },
-      body: JSON.stringify(payload),
-    });
-  } catch (err) {
-    const detail = "network: " + err;
-    console.log("Tonamel " + detail);
-    return { events: null, error: detail };
-  }
-
-  const bodyText = await resp.text();
-  if (resp.status !== 200) {
-    const detail = "HTTP " + resp.status + ": " + bodyText.slice(0, 200).replace(/\s+/g, " ");
-    console.log("Tonamel fetch " + detail);
-    return { events: null, error: detail };
-  }
-
-  let data;
-  try {
-    data = JSON.parse(bodyText);
-  } catch (e) {
-    const detail = "non-JSON body: " + bodyText.slice(0, 200).replace(/\s+/g, " ");
-    console.log("Tonamel " + detail);
-    return { events: null, error: detail };
-  }
-  if (data.errors) {
-    const detail = "GraphQL errors: " + JSON.stringify(data.errors).slice(0, 300);
-    console.log("Tonamel " + detail);
-    return { events: null, error: detail };
-  }
-
-  const edges =
-    data && data.data && data.data.organization && data.data.organization.game &&
-    data.data.organization.game.competitions && data.data.organization.game.competitions.edges;
-  if (!Array.isArray(edges)) {
-    const detail = "unexpected shape: " + bodyText.slice(0, 200).replace(/\s+/g, " ");
-    console.log("Tonamel " + detail);
-    return { events: null, error: detail };
-  }
-
-  const events = edges
-    .map((edge) => {
-      const n = (edge && edge.node) || {};
-      const menu = (n.entryMenus && n.entryMenus[0]) || null;
-      return {
-        id: n.id,
-        title: n.title || "",
-        status: n.status,
-        publicStatus: n.publicStatus,
-        entrants: menu && menu.countSummary ? menu.countSummary.currentEntrantNum : null,
-        capacity: menu ? menu.participantChosenNum : null,
-      };
-    })
-    .filter((e) => e.id && e.publicStatus === "PUBLIC");
-
-  return { events, error: null };
-}
-
-function buildTonamelMessage(monitorName, events) {
-  const header = "🐱 Mew Alert! — new event" + (events.length > 1 ? "s (" + events.length + ")" : "");
-  const lines = [header, "", "📅 " + monitorName, ""];
-  events.slice(0, 10).forEach((e) => {
-    lines.push("🎯 " + truncate(e.title, 200));
-    if (e.entrants != null && e.capacity != null) lines.push("👥 " + e.entrants + "/" + e.capacity);
-    lines.push("🔗 https://tonamel.com/competition/" + e.id);
-    lines.push("");
-  });
-  if (events.length > 10) lines.push("…and " + (events.length - 10) + " more");
-  return truncate(lines.join("\n").trim(), 4900);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -891,7 +601,10 @@ async function handleEventsData(env) {
   try { custom = JSON.parse((await env.MEW_STATE.get(EVENTS_CUSTOM_KEY)) || "[]"); } catch (e) { custom = []; }
   let marks = {};
   try { marks = JSON.parse((await env.MEW_STATE.get(MARKS_KEY)) || "{}"); } catch (e) { marks = {}; }
-  return json({ custom, stores, marks });
+  // Ship the filter too: the board highlights client-side, so editing rules
+  // recolours every stored event immediately instead of only re-captured ones.
+  const config = await loadConfig(env);
+  return json({ custom, stores, marks, config });
 }
 
 // Toggle K/R "entered" checkmarks — shared state in KV so both people see it.
@@ -915,9 +628,24 @@ async function handleEventsMark(request, env, url) {
   return json({ ok: true, url: target, marks: m });
 }
 
+/** GET returns the effective filter; POST saves a new one to KV. */
+async function handleEventsConfig(request, env) {
+  if (request.method === "POST") {
+    let body;
+    try {
+      body = await request.json();
+    } catch (e) {
+      return json({ error: "invalid JSON" }, 400);
+    }
+    const clean = normalizeConfig(body);
+    await env.MEW_STATE.put(CONFIG_KEY, JSON.stringify(clean));
+    await logDecision(env, "config", "Filters updated: " + clean.rules.length + " rule(s)");
+    return json({ ok: true, config: clean });
+  }
+  return json({ config: await loadConfig(env) });
+}
+
 async function handleEventsRemove(request, env, url) {
-  const pw = url.searchParams.get("pw") || request.headers.get("x-admin-password") || "";
-  if (!env.ADMIN_PASSWORD || !safeEqual(pw, env.ADMIN_PASSWORD)) return json({ error: "unauthorized" }, 401);
   const target = url.searchParams.get("url") || "";
   if (!target) return json({ error: "missing url" }, 400);
   let custom = [];
@@ -993,6 +721,16 @@ function parseDeadline(text) {
   return y + "-" + String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
 }
 
+/** Constant-time string compare (used for LINE signature verification). */
+function safeEqual(a, b) {
+  a = String(a);
+  b = String(b);
+  if (a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+
 async function verifyLineSignature(secret, body, signature) {
   try {
     const enc = new TextEncoder();
@@ -1020,37 +758,39 @@ async function lineReply(env, replyToken, messageText) {
   }
 }
 
-// ── Event board HTML: compact date-sorted list, >2-month-old collapsed,
-//    shared K/R entered-checkmarks. One row per event. ──────────────────────
+// ── Event board HTML: compact date-sorted list with per-rule highlight
+//    colours, a bottom filter drawer, and shared K/R marks. ────────────────
 const EVENTS_HTML =
 '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
 '<meta name="viewport" content="width=device-width,initial-scale=1">' +
 '<title>Mew Events</title><style>' +
 '@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap");' +
-/* Mew Catalog tokens (from claude.ai/design: Mew Catalog Design System) */
-':root{--pink-050:#FFF0F7;--pink-100:#FFD6E9;--pink-300:#FFA8D0;--pink-500:#FF7BB6;--pink-700:#FF4D9D;--pink-800:#C24A80;' +
-'--white:#FFFFFF;--grey-050:#F8F8F9;--grey-100:#F1F1F3;--grey-200:#E4E4E8;--grey-300:#CFCFD5;--grey-400:#A7A7B0;' +
-'--grey-500:#82828B;--grey-600:#5F5F67;--grey-800:#38383E;--ink:#211F22;' +
+':root{--pink-050:#FFF0F7;--pink-300:#FFA8D0;--pink-700:#FF4D9D;--pink-800:#C24A80;' +
+'--white:#FFFFFF;--grey-100:#F1F1F3;--grey-200:#E4E4E8;--grey-300:#CFCFD5;--grey-400:#A7A7B0;' +
+'--grey-500:#82828B;--grey-600:#5F5F67;--grey-800:#38383E;--ink:#211F22;--red:#C0392B;' +
 '--font-display:"Outfit","Zen Kaku Gothic New",sans-serif;' +
 '--font-body:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN",sans-serif;' +
 '--font-data:"IBM Plex Mono",ui-monospace,monospace}' +
 '*{box-sizing:border-box}' +
-'body{font-family:var(--font-body);max-width:720px;margin:0 auto;padding:20px 16px;' +
+'body{font-family:var(--font-body);max-width:720px;margin:0 auto;padding:20px 16px 96px;' +
 'background:var(--white);color:var(--grey-800);-webkit-font-smoothing:antialiased}' +
-'h1{font-family:var(--font-display);font-size:24px;font-weight:700;color:var(--ink);' +
-'margin:0 0 4px;letter-spacing:0.01em}' +
-'.rule{height:2px;background:var(--pink-700);width:44px;margin:0 0 18px;border-radius:2px}' +
-'.row{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--grey-200);border-left:2px solid transparent}' +
-'.row.matched{border-left-color:var(--pink-300);background:var(--pink-050)}' +
+'h1{font-family:var(--font-display);font-size:24px;font-weight:700;color:var(--ink);margin:0 0 4px}' +
+'.rule{height:2px;background:var(--pink-700);width:44px;margin:0 0 16px;border-radius:2px}' +
+'.bar{display:flex;gap:8px;align-items:center;margin:0 0 6px;flex-wrap:wrap}' +
+'.bar input,.bar select{font-family:var(--font-body);font-size:12px;color:var(--ink);' +
+'background:var(--white);border:1px solid var(--grey-300);border-radius:2px;padding:5px 7px}' +
+'.bar input[type=text]{flex:1;min-width:120px}' +
+'.row{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--grey-200);' +
+'border-left:3px solid transparent}' +
 '.d{flex:0 0 70px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);white-space:nowrap}' +
 '.t{flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
 '.t a{color:var(--ink);text-decoration:none}.t a:hover{color:var(--pink-800);text-decoration:underline}' +
 '.s{flex:0 0 auto;font-size:9px;font-weight:500;color:var(--grey-500);text-transform:uppercase;' +
 'letter-spacing:0.08em;border:1px solid var(--grey-200);border-radius:2px;padding:2px 6px;' +
-'white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis}' +
+'white-space:nowrap;max-width:104px;overflow:hidden;text-overflow:ellipsis}' +
 '.pin{flex:0 0 auto;font-size:11px}' +
 '.dl{flex:0 0 52px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);white-space:nowrap}' +
-'.dl.soon{color:var(--pink-800)}' +
+'.dl.soon{color:var(--pink-800);font-weight:500}.dl.past{color:var(--red)}' +
 '.sp{flex:0 0 46px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.ad{flex:0 0 44px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.mk{flex:0 0 66px;display:flex;gap:10px}' +
@@ -1059,37 +799,63 @@ const EVENTS_HTML =
 'input[type=checkbox]{width:14px;height:14px;accent-color:var(--pink-700);cursor:pointer;margin:0}' +
 '.x{flex:0 0 14px;text-align:center}' +
 '.del{background:none;border:0;color:var(--grey-400);cursor:pointer;font-size:11px;padding:0}' +
-'.del:hover{color:var(--pink-800)}' +
+'.del:hover{color:var(--red)}' +
 '.hdr{display:flex;align-items:center;gap:10px;padding:4px 6px;border-bottom:1px solid var(--grey-300)}' +
 '.hdr span{font-family:var(--font-body);font-size:9px;font-weight:500;color:var(--grey-500);' +
 'text-transform:uppercase;letter-spacing:0.14em}' +
-'.hdr .sortable{cursor:pointer}.hdr .sortable:hover{color:var(--pink-800)}' +
-'.hdr .on{color:var(--pink-800)}' +
+'.hdr .sortable{cursor:pointer}.hdr .sortable:hover,.hdr .on{color:var(--pink-800)}' +
 '.hdr .s{border:0;padding:0;max-width:none}' +
-'.bar{display:flex;gap:8px;align-items:center;margin:0 0 6px;flex-wrap:wrap}' +
-'.bar input,.bar select{font-family:var(--font-body);font-size:12px;color:var(--ink);' +
-'background:var(--white);border:1px solid var(--grey-300);border-radius:2px;padding:5px 7px}' +
-'.bar input{flex:1;min-width:120px}' +
 'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
 'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
 '#status{color:var(--grey-500);font-size:11px}' +
-'@media(max-width:520px){.s{display:none}.d{flex-basis:56px}}' +
+/* bottom filter drawer */
+'#dock{position:fixed;left:0;right:0;bottom:0;background:var(--white);border-top:1px solid var(--grey-300);' +
+'box-shadow:0 -2px 12px rgba(0,0,0,.06);z-index:20}' +
+'#dockbar{max-width:720px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:10px}' +
+'#dockbar button{font-family:var(--font-body);font-size:12px;border:1px solid var(--grey-300);' +
+'background:var(--white);color:var(--ink);border-radius:2px;padding:6px 12px;cursor:pointer}' +
+'#dockbar button.primary{background:var(--pink-700);border-color:var(--pink-700);color:#fff}' +
+'#panel{max-width:720px;margin:0 auto;padding:0 16px 14px;display:none;max-height:56vh;overflow:auto}' +
+'#panel.open{display:block}' +
+'.frow{display:flex;align-items:center;gap:8px;margin:8px 0}' +
+'.frow input[type=text]{flex:1;min-width:0;font-family:var(--font-body);font-size:12px;padding:6px 8px;' +
+'border:1px solid var(--grey-300);border-radius:2px;color:var(--ink);background:var(--white)}' +
+'.frow input[type=color]{width:30px;height:28px;padding:0;border:1px solid var(--grey-300);' +
+'border-radius:2px;background:none;cursor:pointer}' +
+'.flabel{font-size:9px;font-weight:500;color:var(--grey-500);text-transform:uppercase;' +
+'letter-spacing:0.14em;margin:12px 0 2px}' +
+'.hint{font-size:11px;color:var(--grey-500);margin:2px 0 0}' +
+'@media(max-width:560px){.s,.ad{display:none}.d{flex-basis:56px}.sp{flex-basis:40px}}' +
 '</style></head><body>' +
 '<h1>Mew Events</h1><div class="rule"></div>' +
 '<div class="bar" id="bar" style="display:none">' +
-'<input id="q" type="text" placeholder="Filter by title\\u2026" autocomplete="off">' +
+'<input id="q" type="text" placeholder="Search titles&#8230;" autocomplete="off">' +
 '<select id="storeSel"></select>' +
 '<label style="font-size:12px;color:var(--grey-600);display:flex;align-items:center;gap:4px">' +
 '<input type="checkbox" id="onlyMatch" checked>matches only</label></div>' +
 '<p id="status">Loading&#8230;</p>' +
 '<div class="hdr" id="hdr" style="display:none">' +
-'<span class="d sortable" data-k="when">Date &#x30fb; &#x3006;</span><span class="t sortable" data-k="title">Event</span>' +
+'<span class="d sortable" data-k="when">Date</span><span class="t sortable" data-k="title">Event</span>' +
 '<span class="s sortable" data-k="store">Store</span>' +
 '<span class="dl sortable" data-k="deadline">Entry &#x3006;</span><span class="sp">Spots</span>' +
 '<span class="ad sortable" data-k="added">Added</span>' +
 '<span class="mk">K &#x30fb; R</span><span class="x"></span></div>' +
-'<div id="root"></div><div id="oldwrap"></div><script>' +
-'var MARKS={};var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
+'<div id="root"></div><div id="oldwrap"></div>' +
+'<div id="dock"><div id="dockbar">' +
+'<button id="toggle">&#9881; Filters</button><span id="rulesum" class="hint"></span>' +
+'</div><div id="panel">' +
+'<div class="flabel">Alert rules &#8212; each gets its own highlight colour</div>' +
+'<div id="rules"></div>' +
+'<div class="frow"><button id="addrule">+ Add rule</button></div>' +
+'<div class="flabel">Ignore if title contains</div>' +
+'<div class="frow"><input id="excl" type="text" placeholder="学生以下限定"></div>' +
+'<p class="hint">Comma-separate keywords. Ignore always wins over rules.</p>' +
+'<div class="frow"><button id="save" class="primary">Save filters</button>' +
+'<span id="savemsg" class="hint"></span></div>' +
+'</div></div><script>' +
+'var MARKS={},ITEMS=[],CFG={rules:[],exclude:[]};' +
+'var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
+'var SORT;try{SORT=JSON.parse(localStorage.getItem("mewsort"))||{k:"when",dir:1}}catch(_e){SORT={k:"when",dir:1}}' +
 'function mk(tag,cls,txt){var el=document.createElement(tag);if(cls)el.className=cls;if(txt!=null)el.textContent=txt;return el}' +
 'function parseWhen(s){if(!s)return null;' +
 's=String(s).split("\\u30fb")[0].replace(/[\\uff08(].*?[)\\uff09]/g,"").trim();if(!s)return null;' +
@@ -1100,7 +866,14 @@ const EVENTS_HTML =
 'if(ts<now.getTime()-45*86400000)ts=new Date(y+1,+m[1]-1,+m[2]).getTime();return ts}' +
 'var t=Date.parse(s);return isNaN(t)?null:t}' +
 'function fmtDate(ts){if(!ts)return "\\u2014";var d=new Date(ts);return (d.getMonth()+1)+"/"+d.getDate()+" "+DAYS[d.getDay()]}' +
+'function fmtShort(ts){if(!ts)return "\\u2014";var d=new Date(ts);return (d.getMonth()+1)+"/"+d.getDate()}' +
 'function shortStore(n){var p=String(n).split("@");return (p.length>1?p[p.length-1]:n).trim()}' +
+'function ruleFor(title){var t=String(title||"").toLowerCase();if(!t)return null;' +
+'for(var i=0;i<(CFG.exclude||[]).length;i++){if(t.indexOf(String(CFG.exclude[i]).toLowerCase())!==-1)return null}' +
+'for(var j=0;j<(CFG.rules||[]).length;j++){var r=CFG.rules[j];' +
+'for(var k=0;k<(r.include||[]).length;k++){if(t.indexOf(String(r.include[k]).toLowerCase())!==-1)return r}}' +
+'return null}' +
+'function tint(hex){return hex+"14"}' +
 'function box(u,who){var l=document.createElement("label");var c=document.createElement("input");c.type="checkbox";' +
 'c.checked=!!(MARKS[u]&&MARKS[u][who]);' +
 'c.onchange=function(){var v=c.checked;' +
@@ -1108,44 +881,43 @@ const EVENTS_HTML =
 '.then(function(r){if(!r.ok){c.checked=!v;alert("save failed")}else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
 '.catch(function(){c.checked=!v;alert("save failed")})};' +
 'l.appendChild(c);l.appendChild(document.createTextNode(who));return l}' +
-'function fmtShort(iso){if(!iso)return "\\u2014";var t=Date.parse(iso);if(isNaN(t))return "\\u2014";' +
-'var d=new Date(t);return (d.getMonth()+1)+"/"+d.getDate()}' +
-'function row(e){var r=mk("div","row"+(e.matched?" matched":""));' +
-'r.appendChild(mk("span","d",(e.deadline?"\\u3006 ":"")+fmtDate(e.when)));' +
+'function row(e){var r=mk("div","row");' +
+'if(e.rule){r.style.borderLeftColor=e.rule.color;r.style.background=tint(e.rule.color)}' +
+'r.appendChild(mk("span","d",fmtDate(e.when)));' +
 'if(e.custom)r.appendChild(mk("span","pin","\\ud83d\\udccc"));' +
 'var t=mk("span","t");var a=document.createElement("a");a.href=e.url;a.textContent=e.title;' +
 'a.target="_blank";a.rel="noopener";a.title=e.title;t.appendChild(a);r.appendChild(t);' +
-'if(e.store)r.appendChild(mk("span","s",shortStore(e.store)));' +
+'r.appendChild(mk("span","s",e.store?shortStore(e.store):"\\ud83d\\udccc"));' +
 'var dts=parseWhen(e.deadline);' +
-'var dl=mk("span","dl",dts?("\\u3006"+fmtShort(new Date(dts).toISOString())):"\\u2014");' +
-'if(dts&&dts-Date.now()<3*86400000&&dts>=Date.now()-86400000)dl.classList.add("soon");' +
+'var dl=mk("span","dl",dts?("\\u3006"+fmtShort(dts)):"\\u2014");' +
+'if(dts){if(dts<Date.now())dl.classList.add("past");' +
+'else if(dts-Date.now()<3*86400000)dl.classList.add("soon")}' +
 'r.appendChild(dl);' +
 'r.appendChild(mk("span","sp",e.spots||"\\u2014"));' +
-'r.appendChild(mk("span","ad",fmtShort(e.added)));' +
+'r.appendChild(mk("span","ad",fmtShort(e.addedTs)));' +
 'var m=mk("span","mk");m.appendChild(box(e.url,"K"));m.appendChild(box(e.url,"R"));r.appendChild(m);' +
 'var xs=mk("span","x");' +
 'if(e.custom){var x=mk("button","del","\\u2715");' +
-'x.onclick=function(){var pw=prompt("Admin password to remove:");if(!pw)return;' +
-'fetch("/events/remove?pw="+encodeURIComponent(pw)+"&url="+encodeURIComponent(e.url))' +
-'.then(function(r2){if(r2.ok)r.remove();else alert("unauthorized")})};xs.appendChild(x)}' +
-'r.appendChild(xs);' +
-'return r}' +
-'var ITEMS=[];' +
-'var SORT;try{SORT=JSON.parse(localStorage.getItem("mewsort"))||{k:"when",dir:1}}catch(_e){SORT={k:"when",dir:1}}' +
+'x.onclick=function(){if(!confirm("Remove this pinned link?"))return;' +
+'fetch("/events/remove?url="+encodeURIComponent(e.url)).then(function(r2){if(r2.ok)r.remove()})};' +
+'xs.appendChild(x)}' +
+'r.appendChild(xs);return r}' +
 'function cmp(a,b){var k=SORT.k,d=SORT.dir;' +
 'if(k==="title")return d*String(a.title||"").localeCompare(String(b.title||""));' +
 'if(k==="store")return d*shortStore(a.store||"").localeCompare(shortStore(b.store||""));' +
 'if(k==="added")return d*((a.addedTs||0)-(b.addedTs||0));' +
-'if(k==="deadline"){var x=parseWhen(a.deadline)||Infinity,y=parseWhen(b.deadline)||Infinity;' +
-'return (x===y)?0:d*(x-y)}' +
+'if(k==="deadline"){var x=parseWhen(a.deadline)||Infinity,y=parseWhen(b.deadline)||Infinity;return (x===y)?0:d*(x-y)}' +
 'return d*((a.when||0)-(b.when||0))}' +
 'function render(){' +
+'ITEMS.forEach(function(e){e.rule=ruleFor(e.title)});' +
 'var q=(document.getElementById("q").value||"").toLowerCase();' +
 'var st=document.getElementById("storeSel").value;' +
 'var om=document.getElementById("onlyMatch").checked;' +
 'var list=ITEMS.filter(function(e){' +
-'if(om&&!e.matched)return false;' +
-'if(st&&(e.store||"")!==st)return false;' +
+'if(om&&!e.rule&&!e.custom)return false;' +
+'if(st==="__tonamel__"){if(!e.store)return false}' +
+'else if(st==="__pinned__"){if(!e.custom)return false}' +
+'else if(st&&(e.store||"")!==st)return false;' +
 'if(q&&String(e.title||"").toLowerCase().indexOf(q)===-1)return false;return true});' +
 'var cutoff=Date.now()-7*86400000;' +
 'var recent=list.filter(function(e){return e.when>=cutoff}).sort(cmp);' +
@@ -1163,98 +935,61 @@ const EVENTS_HTML =
 'h.textContent=h.getAttribute("data-base")+(on?(SORT.dir>0?" \\u2191":" \\u2193"):"");' +
 'h.classList.toggle("on",on)}' +
 'document.getElementById("status").textContent=(recent.length||old.length)?"":' +
-'(ITEMS.length?"Nothing matches your filter.":"No events yet \\u2014 they appear as monitors report in.")}' +
+'(ITEMS.length?"Nothing matches your filter.":"No events yet \\u2014 they appear as the poller runs.");' +
+'document.getElementById("rulesum").textContent=' +
+'(CFG.rules||[]).map(function(r){return r.label}).join(" \\u00b7 ")||"no rules \\u2014 everything matches"}' +
+/* ---- filter drawer ---- */
+'function ruleRow(r){var d=mk("div","frow");' +
+'var kw=document.createElement("input");kw.type="text";kw.value=(r.include||[]).join(", ");' +
+'kw.placeholder="keywords, comma separated";' +
+'var col=document.createElement("input");col.type="color";col.value=r.color||"#3b82f6";' +
+'var rm=document.createElement("button");rm.textContent="\\u2715";rm.onclick=function(){d.remove()};' +
+'d.appendChild(kw);d.appendChild(col);d.appendChild(rm);' +
+'d._get=function(){var inc=kw.value.split(",").map(function(s){return s.trim()}).filter(Boolean);' +
+'return inc.length?{label:inc[0],include:inc,color:col.value}:null};return d}' +
+'function fillPanel(){var host=document.getElementById("rules");host.innerHTML="";' +
+'(CFG.rules||[]).forEach(function(r){host.appendChild(ruleRow(r))});' +
+'if(!(CFG.rules||[]).length)host.appendChild(ruleRow({include:[],color:"#3b82f6"}));' +
+'document.getElementById("excl").value=(CFG.exclude||[]).join(", ")}' +
+'document.getElementById("toggle").onclick=function(){' +
+'document.getElementById("panel").classList.toggle("open")};' +
+'document.getElementById("addrule").onclick=function(){' +
+'document.getElementById("rules").appendChild(ruleRow({include:[],color:"#FF4D9D"}))};' +
+'document.getElementById("save").onclick=function(){' +
+'var rules=[];Array.prototype.forEach.call(document.querySelectorAll("#rules .frow"),function(d){' +
+'if(d._get){var v=d._get();if(v)rules.push(v)}});' +
+'var exclude=document.getElementById("excl").value.split(",").map(function(s){return s.trim()}).filter(Boolean);' +
+'var msg=document.getElementById("savemsg");msg.textContent="Saving\\u2026";' +
+'fetch("/events/config",{method:"POST",headers:{"content-type":"application/json"},' +
+'body:JSON.stringify({rules:rules,exclude:exclude})})' +
+'.then(function(r){return r.json()}).then(function(j){' +
+'if(j.ok){CFG=j.config;msg.textContent="Saved \\u2713";render();setTimeout(function(){msg.textContent=""},2000)}' +
+'else msg.textContent="Error: "+(j.error||"failed")})' +
+'.catch(function(e){msg.textContent="Error: "+e.message})};' +
+/* ---- load ---- */
 'fetch("/events/data").then(function(r){return r.json()}).then(function(data){' +
-'MARKS=data.marks||{};ITEMS=[];' +
-'(data.custom||[]).forEach(function(e){var w=parseWhen(e.date);e.deadline=(w!=null);e.store="";' +
-'e.when=(w!=null)?w:(Date.parse(e.addedAt)||Date.now());e.added=e.addedAt;e.addedTs=Date.parse(e.addedAt)||0;ITEMS.push(e)});' +
+'MARKS=data.marks||{};CFG=data.config||{rules:[],exclude:[]};ITEMS=[];' +
+'(data.custom||[]).forEach(function(e){var w=parseWhen(e.date);e.store="";e.custom=true;' +
+'e.when=(w!=null)?w:(Date.parse(e.addedAt)||Date.now());e.addedTs=Date.parse(e.addedAt)||0;' +
+'e.deadline=e.date||"";ITEMS.push(e)});' +
 'Object.keys(data.stores||{}).forEach(function(n){(data.stores[n]||[]).forEach(function(e){' +
 'e.store=n;var w=parseWhen(e.date);e.when=(w!=null)?w:(Date.parse(e.firstSeen)||0);' +
-'e.added=e.firstSeen;e.addedTs=Date.parse(e.firstSeen)||0;ITEMS.push(e)})});' +
+'e.addedTs=Date.parse(e.firstSeen)||0;ITEMS.push(e)})});' +
 'var names={};ITEMS.forEach(function(e){if(e.store)names[e.store]=1});' +
-'var sel=document.getElementById("storeSel");sel.appendChild(new Option("All stores",""));' +
-'Object.keys(names).sort().forEach(function(n){sel.appendChild(new Option(shortStore(n),n))});' +
+'var sel=document.getElementById("storeSel");sel.appendChild(new Option("All",""));' +
+'sel.appendChild(new Option("Tonamel \\u2014 all stores","__tonamel__"));' +
+'Object.keys(names).sort().forEach(function(n){sel.appendChild(new Option("  "+shortStore(n),n))});' +
+'sel.appendChild(new Option("\\ud83d\\udccc Pinned","__pinned__"));' +
 'document.getElementById("bar").style.display="flex";' +
 'if(ITEMS.length)document.getElementById("hdr").style.display="flex";' +
 'var om=document.getElementById("onlyMatch");' +
 'try{var sv=localStorage.getItem("mewonly");if(sv!==null)om.checked=(sv==="1")}catch(_e){}' +
 'document.getElementById("q").oninput=render;sel.onchange=render;' +
 'om.onchange=function(){try{localStorage.setItem("mewonly",om.checked?"1":"0")}catch(_e){}render()};' +
-'document.querySelectorAll(".hdr .sortable").forEach(function(h){h.onclick=function(){' +
+'Array.prototype.forEach.call(document.querySelectorAll(".hdr .sortable"),function(h){h.onclick=function(){' +
 'var k=h.getAttribute("data-k");if(SORT.k===k)SORT.dir=-SORT.dir;else{SORT.k=k;SORT.dir=1}' +
 'try{localStorage.setItem("mewsort",JSON.stringify(SORT))}catch(_e){}render()}});' +
-'render()})' +
+'fillPanel();render()})' +
 '.catch(function(e){document.getElementById("status").textContent="Failed to load: "+e.message});' +
 '</script></body></html>';
 
-// ── Admin page HTML (self-contained; no backticks / ${} inside) ──────────────
-const ADMIN_HTML =
-'<!doctype html><html lang="en"><head><meta charset="utf-8">' +
-'<meta name="viewport" content="width=device-width,initial-scale=1">' +
-'<title>Mew Alerts — Filters</title><style>' +
-'*{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;' +
-'max-width:640px;margin:0 auto;padding:16px;background:#0f1115;color:#e6e6e6}' +
-'h1{font-size:20px}h2{font-size:16px;margin-top:24px}' +
-'.block{border:1px solid #2a2e37;border-radius:10px;padding:12px;margin:10px 0;background:#161a22}' +
-'.btitle{font-weight:600;margin-bottom:8px;word-break:break-word}' +
-'.row{display:flex;align-items:center;gap:8px;margin:6px 0}' +
-'.row label{flex:0 0 46%;font-size:13px;color:#a9b1bd}' +
-'input[type=text],input[type=number],input[type=password],select{flex:1;min-width:0;padding:8px;' +
-'border:1px solid #2a2e37;border-radius:8px;background:#0f1115;color:#e6e6e6;font-size:14px}' +
-'button{padding:9px 14px;border:0;border-radius:8px;background:#3b82f6;color:#fff;font-size:14px;cursor:pointer}' +
-'button.secondary{background:#2a2e37}.muted{color:#8a93a2;font-size:13px}' +
-'#status,#savestatus{margin-left:8px;font-size:13px}.add{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}' +
-'</style></head><body>' +
-'<h1>🐱 Mew Alerts — Filters</h1>' +
-'<div class="add"><input id="pw" type="password" placeholder="Admin password" autocomplete="current-password">' +
-'<button onclick="load()">Load</button><span id="status" class="muted"></span></div>' +
-'<div id="app" style="display:none">' +
-'<p class="muted">“Alert ONLY if contains” = comma-separated keywords. When set, the alert fires ' +
-'only when a NEW line contains one of them, and shows ONLY those matching lines (plus the link) — ' +
-'no giant dump. Leave blank to show the full diff. “Ignore if contains” drops noisy lines. ' +
-'Min change = ignore edits smaller than N characters.</p>' +
-'<div id="blocks"></div>' +
-'<h2>Add monitor override</h2>' +
-'<div class="add"><select id="detected"></select><input id="newname" type="text" placeholder="or type a monitor name">' +
-'<button class="secondary" onclick="addMonitor()">Add</button></div>' +
-'<div class="add"><button onclick="save()">💾 Save</button><span id="savestatus"></span></div>' +
-'</div><script>' +
-'function setStatus(m){document.getElementById("status").textContent=m}' +
-'function fieldRow(t,el){var d=document.createElement("div");d.className="row";var l=document.createElement("label");' +
-'l.textContent=t;d.appendChild(l);d.appendChild(el);return d}' +
-'function makeBlock(name,block){block=block||{};var wrap=document.createElement("div");wrap.className="block";' +
-'var title=document.createElement("div");title.className="btitle";title.textContent=(name===null?"Default (all monitors)":name);' +
-'wrap.appendChild(title);' +
-'var enabled=document.createElement("input");enabled.type="checkbox";enabled.checked=(block.enabled!==false);' +
-'var inc=document.createElement("input");inc.type="text";inc.value=(block.include||[]).join(", ");inc.placeholder="in stock, restock";' +
-'var exc=document.createElement("input");exc.type="text";exc.value=(block.exclude||[]).join(", ");exc.placeholder="sold out, loading";' +
-'var minc=document.createElement("input");minc.type="number";minc.min="0";minc.value=(block.minChars!=null?block.minChars:1);' +
-'wrap.appendChild(fieldRow("Enabled",enabled));wrap.appendChild(fieldRow("Alert ONLY if contains",inc));' +
-'wrap.appendChild(fieldRow("Ignore if contains",exc));wrap.appendChild(fieldRow("Min change (chars)",minc));' +
-'if(name!==null){var rm=document.createElement("button");rm.className="secondary";rm.textContent="Remove override";' +
-'rm.onclick=function(){wrap.remove()};var r=document.createElement("div");r.className="row";r.appendChild(rm);wrap.appendChild(r)}' +
-'wrap._name=name;wrap._get=function(){var b={};' +
-'var i=inc.value.split(",").map(function(s){return s.trim()}).filter(Boolean);if(i.length)b.include=i;' +
-'var e=exc.value.split(",").map(function(s){return s.trim()}).filter(Boolean);if(e.length)b.exclude=e;' +
-'var m=parseInt(minc.value,10);b.minChars=isNaN(m)?1:m;b.enabled=enabled.checked;return b};return wrap}' +
-'function render(config,monitors){var host=document.getElementById("blocks");host.innerHTML="";' +
-'host.appendChild(makeBlock(null,(config&&config.default)||{}));var mons=(config&&config.monitors)||{};' +
-'Object.keys(mons).forEach(function(n){host.appendChild(makeBlock(n,mons[n]))});' +
-'var sel=document.getElementById("detected");sel.innerHTML="";(monitors||[]).forEach(function(n){' +
-'var o=document.createElement("option");o.value=n;o.textContent=n;sel.appendChild(o)})}' +
-'function collect(){var cfg={default:{},monitors:{}};document.querySelectorAll(".block").forEach(function(bl){' +
-'if(bl._name===null)cfg.default=bl._get();else cfg.monitors[bl._name]=bl._get()});return cfg}' +
-'function addMonitor(){var name=(document.getElementById("newname").value||"").trim()||document.getElementById("detected").value;' +
-'if(!name)return;document.getElementById("blocks").appendChild(makeBlock(name,{}));document.getElementById("newname").value=""}' +
-'function load(){var pw=document.getElementById("pw").value;localStorage.setItem("mewpw",pw);setStatus("Loading…");' +
-'fetch("/admin/config?pw="+encodeURIComponent(pw)).then(function(r){if(!r.ok)throw new Error("auth failed ("+r.status+")");return r.json()})' +
-'.then(function(d){render(d.config,d.monitors);document.getElementById("app").style.display="block";setStatus("")})' +
-'.catch(function(e){setStatus(e.message)})}' +
-'function save(){var pw=localStorage.getItem("mewpw")||document.getElementById("pw").value;var cfg=collect();' +
-'document.getElementById("savestatus").textContent="Saving…";' +
-'fetch("/admin/save",{method:"POST",headers:{"content-type":"application/json","x-admin-password":pw},body:JSON.stringify(cfg)})' +
-'.then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j}})})' +
-'.then(function(res){document.getElementById("savestatus").textContent=res.ok?"Saved ✓":("Error: "+(res.j.error||"failed"))})' +
-'.catch(function(e){document.getElementById("savestatus").textContent="Error: "+e.message})}' +
-'window.addEventListener("load",function(){var p=localStorage.getItem("mewpw");if(p){document.getElementById("pw").value=p;load()}});' +
-'</script></body></html>';

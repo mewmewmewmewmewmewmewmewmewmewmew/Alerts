@@ -1,22 +1,16 @@
 {
-  "default": {
-    "include": ["スタートデッキ", "開封"],
-    "exclude": ["小学生以下限定"],
-    "minChars": 1,
-    "enabled": true
-  },
-  "monitors": {},
-  "tonamel": {
-    "_comment": "Direct GraphQL poller is blocked by tonamel's edge (403 to non-browser IPs). Kept disabled; the Distill JavaScript-selector -> linked-webhook path is used instead.",
-    "enabled": false,
-    "monitors": [
-      {
-        "name": "晴れる屋2 events @ 秋葉原",
-        "organizationId": "rmQjT",
-        "gameId": "pokemon_card",
-        "include": ["スタートデッキ", "ボックス開封"],
-        "exclude": ["小学生以下限定"]
-      }
-    ]
-  }
+  "rules": [
+    {
+      "label": "スタートデッキ",
+      "include": ["スタートデッキ"],
+      "color": "#3b82f6"
+    },
+    {
+      "label": "開封",
+      "include": ["開封"],
+      "color": "#FF4D9D"
+    }
+  ],
+  "exclude": ["学生以下限定"],
+  "minChars": 1
 }
