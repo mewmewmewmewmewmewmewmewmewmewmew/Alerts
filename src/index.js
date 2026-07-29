@@ -796,29 +796,31 @@ const EVENTS_HTML =
 '.bar input[type=text]{flex:1;min-width:120px}' +
 '.row{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--grey-200);' +
 'border-left:3px solid transparent}' +
-'.d{flex:0 0 70px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);white-space:nowrap}' +
+'.d{flex:0 0 74px;font-family:var(--font-data);font-size:12px;font-weight:500;color:var(--ink);white-space:nowrap}' +
 '.t{flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
 '.t a{color:var(--ink);text-decoration:none}.t a:hover{color:var(--pink-800);text-decoration:underline}' +
 '.s{flex:0 0 auto;font-size:9px;font-weight:500;color:var(--grey-500);text-transform:uppercase;' +
 'letter-spacing:0.08em;border:1px solid var(--grey-200);border-radius:2px;padding:2px 6px;' +
 'white-space:nowrap;max-width:104px;overflow:hidden;text-overflow:ellipsis}' +
 '.pin{flex:0 0 auto;font-size:11px}' +
-'.dl{flex:0 0 52px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);white-space:nowrap}' +
-'.dl.soon{color:var(--pink-800);font-weight:500}.dl.past{color:var(--red)}' +
-'.sp{flex:0 0 46px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
-'.ad{flex:0 0 44px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
-'.mk{flex:0 0 66px;display:flex;gap:10px}' +
+'.dl{flex:0 0 62px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);' +
+'white-space:nowrap;text-align:center;padding:3px 4px;border-radius:2px}' +
+'.dl.soon{color:var(--pink-800);font-weight:500;background:var(--pink-050)}' +
+'.dl.past{background:var(--red);color:#fff;font-weight:500}' +
+'.sp{flex:0 0 44px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
+'.ad{flex:0 0 40px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
+'.mk{flex:0 0 62px;display:flex;gap:10px}' +
 '.mk label{font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);cursor:pointer;' +
 'user-select:none;display:flex;align-items:center;gap:3px}' +
 'input[type=checkbox]{width:14px;height:14px;accent-color:var(--pink-700);cursor:pointer;margin:0}' +
-'.x{flex:0 0 14px;text-align:center}' +
-'.del{background:none;border:0;color:var(--grey-400);cursor:pointer;font-size:11px;padding:0}' +
+'.del{flex:0 0 auto;background:none;border:0;color:var(--grey-400);cursor:pointer;font-size:11px;padding:0 0 0 4px}' +
 '.del:hover{color:var(--red)}' +
 '.hdr{display:flex;align-items:center;gap:10px;padding:4px 6px;border-bottom:1px solid var(--grey-300)}' +
 '.hdr span{font-family:var(--font-body);font-size:9px;font-weight:500;color:var(--grey-500);' +
 'text-transform:uppercase;letter-spacing:0.14em}' +
 '.hdr .sortable{cursor:pointer}.hdr .sortable:hover,.hdr .on{color:var(--pink-800)}' +
-'.hdr .s{border:0;padding:0;max-width:none}' +
+'.hdr .s{border:0;padding:0;max-width:none;background:none}' +
+'.hdr .dl{padding:0;text-align:left}' +
 'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
 'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
 '#status{color:var(--grey-500);font-size:11px}' +
@@ -839,7 +841,7 @@ const EVENTS_HTML =
 '.flabel{font-size:9px;font-weight:500;color:var(--grey-500);text-transform:uppercase;' +
 'letter-spacing:0.14em;margin:12px 0 2px}' +
 '.hint{font-size:11px;color:var(--grey-500);margin:2px 0 0}' +
-'@media(max-width:560px){.s,.ad{display:none}.d{flex-basis:56px}.sp{flex-basis:40px}}' +
+'@media(max-width:560px){.s,.ad,.sp{display:none}.d{flex-basis:62px}.dl{flex-basis:56px}}' +
 '</style></head><body>' +
 '<h1>Mew Events</h1><div class="rule"></div>' +
 '<div class="bar" id="bar" style="display:none">' +
@@ -849,11 +851,11 @@ const EVENTS_HTML =
 '<input type="checkbox" id="onlyMatch" checked>matches only</label></div>' +
 '<p id="status">Loading&#8230;</p>' +
 '<div class="hdr" id="hdr" style="display:none">' +
-'<span class="d sortable" data-k="when">Date</span><span class="t sortable" data-k="title">Event</span>' +
-'<span class="s sortable" data-k="store">Store</span>' +
-'<span class="dl sortable" data-k="deadline">Entry &#x3006;</span><span class="sp">Spots</span>' +
 '<span class="ad sortable" data-k="added">Added</span>' +
-'<span class="mk">K &#x30fb; R</span><span class="x"></span></div>' +
+'<span class="d sortable" data-k="when">Date</span><span class="t sortable" data-k="title">Event</span>' +
+'<span class="s sortable" data-k="store">Store</span><span class="sp">Spots</span>' +
+'<span class="mk">K &#x30fb; R</span>' +
+'<span class="dl sortable" data-k="deadline">Entry &#x3006;</span></div>' +
 '<div id="root"></div><div id="oldwrap"></div>' +
 '<div id="dock"><div id="dockbar">' +
 '<button id="toggle">&#9881; Filters</button><span id="rulesum" class="hint"></span>' +
@@ -903,6 +905,7 @@ const EVENTS_HTML =
 'l.appendChild(c);l.appendChild(document.createTextNode(who));return l}' +
 'function row(e){var r=mk("div","row");' +
 'if(e.rule){r.style.borderLeftColor=e.rule.color;r.style.background=tint(e.rule.color)}' +
+'r.appendChild(mk("span","ad",fmtShort(e.addedTs)));' +
 'r.appendChild(mk("span","d",fmtDate(e.when)));' +
 'if(e.custom)r.appendChild(mk("span","pin","\\ud83d\\udccc"));' +
 'var t=mk("span","t");var a=document.createElement("a");a.href=e.url;a.textContent=e.title;' +
@@ -911,20 +914,18 @@ const EVENTS_HTML =
 'var sh=e.store?storeHue(e.store):330;' +
 'sp.style.color="hsl("+sh+" 46% 38%)";sp.style.borderColor="hsl("+sh+" 46% 82%)";' +
 'sp.style.background="hsl("+sh+" 62% 96%)";r.appendChild(sp);' +
+'r.appendChild(mk("span","sp",e.spots||"\\u2014"));' +
+'var m=mk("span","mk");m.appendChild(box(e.url,"K"));m.appendChild(box(e.url,"R"));r.appendChild(m);' +
 'var dts=parseWhen(e.deadline);' +
 'var dl=mk("span","dl",dts?("\\u3006"+fmtShort(dts)):"\\u2014");' +
 'if(dts){if(dts<Date.now())dl.classList.add("past");' +
 'else if(dts-Date.now()<3*86400000)dl.classList.add("soon")}' +
 'r.appendChild(dl);' +
-'r.appendChild(mk("span","sp",e.spots||"\\u2014"));' +
-'r.appendChild(mk("span","ad",fmtShort(e.addedTs)));' +
-'var m=mk("span","mk");m.appendChild(box(e.url,"K"));m.appendChild(box(e.url,"R"));r.appendChild(m);' +
-'var xs=mk("span","x");' +
 'if(e.custom){var x=mk("button","del","\\u2715");' +
 'x.onclick=function(){if(!confirm("Remove this pinned link?"))return;' +
 'fetch("/events/remove?url="+encodeURIComponent(e.url)).then(function(r2){if(r2.ok)r.remove()})};' +
-'xs.appendChild(x)}' +
-'r.appendChild(xs);return r}' +
+'r.appendChild(x)}' +
+'return r}' +
 'function cmp(a,b){var k=SORT.k,d=SORT.dir;' +
 'if(k==="title")return d*String(a.title||"").localeCompare(String(b.title||""));' +
 'if(k==="store")return d*shortStore(a.store||"").localeCompare(shortStore(b.store||""));' +
