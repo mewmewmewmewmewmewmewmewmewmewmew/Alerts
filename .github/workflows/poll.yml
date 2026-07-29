@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install Playwright + Chromium
         run: npm install playwright@1.48.0 && npx playwright install --with-deps chromium
