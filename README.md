@@ -62,8 +62,10 @@ One chronological list: upcoming events plus the last 7 days, with older ones
 folded into a **Past events** section. Columns are sortable (click a header) and
 there's a search box and a store/category picker.
 
-- **K / R checkboxes** mark who entered. They're stored server-side, so both of
-  you see the same state from any device.
+- **K / R marks** are tri-state — click to cycle: empty (undecided) → grey ✕
+  (looked, not entering) → pink ✓ (entered). Stored server-side, so both of you
+  see the same state from any device. Each header sorts by that person's state,
+  undecided first.
 - **Entry 〆** shows when registration closes — pink within 3 days, **red once
   it has passed**.
 - **Spots** shows entrants/capacity, refreshed every poll.

@@ -625,7 +625,7 @@ async function handleEventsData(env) {
   let custom = [];
   try { custom = JSON.parse((await env.MEW_STATE.get(EVENTS_CUSTOM_KEY)) || "[]"); } catch (e) { custom = []; }
   let marks = {};
-  try { marks = JSON.parse((await env.MEW_STATE.get(MARKS_KEY)) || "{}"); } catch (e) { marks = {}; }
+  try { marks = normalizeMarks(JSON.parse((await env.MEW_STATE.get(MARKS_KEY)) || "{}")); } catch (e) { marks = {}; }
   // Ship the filter too: the board highlights client-side, so editing rules
   // recolours every stored event immediately instead of only re-captured ones.
   const config = await loadConfig(env);
@@ -633,17 +633,42 @@ async function handleEventsData(env) {
 }
 
 // Toggle K/R "entered" checkmarks — shared state in KV so both people see it.
+/**
+ * Marks are tri-state per person: "" (undecided), "x" (looked, not entering),
+ * "y" (entered). Older records stored booleans, so normalise on read.
+ */
+function markState(v) {
+  if (v === true || v === "y" || v === "1") return "y";
+  if (v === "x") return "x";
+  return "";
+}
+
+function normalizeMarks(marks) {
+  const out = {};
+  for (const url of Object.keys(marks || {})) {
+    const src = marks[url] || {};
+    const m = {};
+    for (const who of ["K", "R"]) {
+      const st = markState(src[who]);
+      if (st) m[who] = st;
+    }
+    if (Object.keys(m).length) out[url] = m;
+  }
+  return out;
+}
+
 async function handleEventsMark(request, env, url) {
   const target = url.searchParams.get("url") || "";
   const who = url.searchParams.get("who") || "";
-  const val = url.searchParams.get("val") === "1";
+  const val = markState(url.searchParams.get("val"));
   if (!target || (who !== "K" && who !== "R")) return json({ error: "bad params" }, 400);
 
   let marks = {};
   try { marks = JSON.parse((await env.MEW_STATE.get(MARKS_KEY)) || "{}"); } catch (e) { marks = {}; }
+  marks = normalizeMarks(marks);
   const m = marks[target] || {};
-  m[who] = val;
-  marks[target] = m;
+  if (val) m[who] = val; else delete m[who];
+  if (Object.keys(m).length) marks[target] = m; else delete marks[target];
 
   // Bound growth: drop oldest entries beyond 1000 urls.
   const keys = Object.keys(marks);
@@ -829,9 +854,12 @@ const EVENTS_HTML =
 '.sp .b{display:inline-block;width:20px;text-align:left}' +
 '.sp .ty{margin-left:5px}' +
 '.ad{flex:0 0 40px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
-'.mk{flex:0 0 62px;display:flex;gap:10px}' +
-'.mk label{font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);cursor:pointer;' +
-'user-select:none;display:flex;align-items:center;gap:3px}' +
+'.mk{flex:0 0 46px;display:flex;gap:10px}' +
+'.m3{width:16px;height:16px;padding:0;border:1px solid var(--grey-300);border-radius:2px;' +
+'background:var(--white);color:#fff;font-size:10px;line-height:1;cursor:pointer;' +
+'display:flex;align-items:center;justify-content:center}' +
+'.m3.sk{background:var(--grey-500);border-color:var(--grey-500)}' +
+'.m3.en{background:var(--pink-700);border-color:var(--pink-700)}' +
 'input[type=checkbox]{width:14px;height:14px;accent-color:var(--pink-700);cursor:pointer;margin:0}' +
 '.del{flex:0 0 auto;background:none;border:0;color:var(--grey-400);cursor:pointer;font-size:11px;padding:0 0 0 4px}' +
 '.del:hover{color:var(--red)}' +
@@ -841,7 +869,7 @@ const EVENTS_HTML =
 '.hdr .sortable{cursor:pointer}.hdr .sortable:hover,.hdr .on{color:var(--pink-800)}' +
 '.hdr .s{border:0;padding:0;max-width:none;background:none}' +
 '.hdr .dl{padding:0;text-align:left;background:none;border:0}' +
-'.hdr .mk span{display:inline-block;width:26px;text-align:center;white-space:nowrap}' +
+'.hdr .mk span{display:inline-block;width:16px;text-align:center;white-space:nowrap}' +
 'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
 'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
 '#status{color:var(--grey-500);font-size:11px}' +
@@ -921,13 +949,19 @@ const EVENTS_HTML =
 'for(var k=0;k<(r.include||[]).length;k++){if(t.indexOf(String(r.include[k]).toLowerCase())!==-1)return r}}' +
 'return null}' +
 'function tint(hex){return hex+"14"}' +
-'function box(u,who){var l=document.createElement("label");var c=document.createElement("input");c.type="checkbox";' +
-'c.checked=!!(MARKS[u]&&MARKS[u][who]);' +
-'c.onchange=function(){var v=c.checked;' +
-'fetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+(v?"1":"0"))' +
-'.then(function(r){if(!r.ok){c.checked=!v;alert("save failed")}else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
-'.catch(function(){c.checked=!v;alert("save failed")})};' +
-'l.appendChild(c);l.appendChild(document.createTextNode(who));return l}' +
+'var CYCLE=["","x","y"];' +
+'function st(v){return (v===true||v==="y"||v==="1")?"y":(v==="x"?"x":"")}' +
+'function box(u,who){var b=document.createElement("button");var cur=st(MARKS[u]&&MARKS[u][who]);' +
+'function paint(v){b.className="m3"+(v==="x"?" sk":(v==="y"?" en":""));' +
+'b.textContent=v==="x"?"\\u2715":(v==="y"?"\\u2713":"");' +
+'b.title=who+": "+(v==="y"?"entered":(v==="x"?"not entering":"undecided"))}' +
+'paint(cur);' +
+'b.onclick=function(){var prev=cur;cur=CYCLE[(CYCLE.indexOf(cur)+1)%3];paint(cur);' +
+'var v=cur;fetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+v)' +
+'.then(function(r){if(!r.ok){cur=prev;paint(prev);alert("save failed")}' +
+'else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
+'.catch(function(){cur=prev;paint(prev);alert("save failed")})};' +
+'return b}' +
 'function row(e){var r=mk("div","row"+(isToday(e.addedTs)?" new":""));' +
 'if(e.rule){r.style.borderLeftColor=e.rule.color;r.style.background=tint(e.rule.color)}' +
 'r.appendChild(mk("span","ad",fmtShort(e.addedTs)));' +
@@ -961,8 +995,9 @@ const EVENTS_HTML =
 'if(k==="title")return d*String(a.title||"").localeCompare(String(b.title||""));' +
 'if(k==="store")return d*shortStore(a.store||"").localeCompare(shortStore(b.store||""));' +
 'if(k==="added")return d*((a.addedTs||0)-(b.addedTs||0));' +
-'if(k==="K"||k==="R"){var am=MARKS[a.url]&&MARKS[a.url][k]?1:0,' +
-'bm=MARKS[b.url]&&MARKS[b.url][k]?1:0;if(am!==bm)return d*(am-bm);return (a.when||0)-(b.when||0)}' +
+'if(k==="K"||k==="R"){var rk=function(v){v=st(v);return v==="y"?2:(v==="x"?1:0)};' +
+'var am=rk(MARKS[a.url]&&MARKS[a.url][k]),bm=rk(MARKS[b.url]&&MARKS[b.url][k]);' +
+'if(am!==bm)return d*(am-bm);return (a.when||0)-(b.when||0)}' +
 'if(k==="entry")return d*String(a.entry||"\\uffff").localeCompare(String(b.entry||"\\uffff"));' +
 'if(k==="deadline"){var x=parseWhen(a.deadline)||Infinity,y=parseWhen(b.deadline)||Infinity;return (x===y)?0:d*(x-y)}' +
 'return d*((a.when||0)-(b.when||0))}' +
@@ -990,7 +1025,9 @@ const EVENTS_HTML =
 'for(var i=0;i<hs.length;i++){var h=hs[i];' +
 'if(h.getAttribute("data-base")===null)h.setAttribute("data-base",h.textContent);' +
 'var on=h.getAttribute("data-k")===SORT.k;' +
-'h.textContent=h.getAttribute("data-base")+(on?(SORT.dir>0?" \\u2191":" \\u2193"):"");' +
+'var kk=h.getAttribute("data-k");var suf=(kk==="K"||kk==="R")?"":' +
+'(on?(SORT.dir>0?" \\u2191":" \\u2193"):"");' +
+'h.textContent=h.getAttribute("data-base")+suf;' +
 'h.classList.toggle("on",on)}' +
 'document.getElementById("status").textContent=(recent.length||old.length)?"":' +
 '(ITEMS.length?"Nothing matches your filter.":"No events yet \\u2014 they appear as the poller runs.");' +
