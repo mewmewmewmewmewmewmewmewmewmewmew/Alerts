@@ -311,8 +311,9 @@ function parseLinkedItems(body) {
       const date = parts[2] || "";
       const deadline = parts[3] || ""; // entry/registration closes
       const spots = parts[4] || ""; // "29/30"
+      const entry = parts[5] || ""; // "FCFS" or 抽選 (lottery)
       if (!title || !url) return null;
-      return { title, url, date, deadline, spots };
+      return { title, url, date, deadline, spots, entry };
     })
     .filter(Boolean);
 }
@@ -403,6 +404,7 @@ function buildLinkedMessage(name, items) {
     if (it.date) meta.push("🗓 " + truncate(it.date, 100));
     if (it.deadline) meta.push("〆 " + truncate(it.deadline, 100));
     if (it.spots) meta.push("👥 " + truncate(it.spots, 20));
+    if (it.entry) meta.push((it.entry === "抽選" ? "🎲 " : "⚡ ") + it.entry);
     if (meta.length) lines.push(meta.join("   "));
     lines.push("🔗 " + it.url);
     lines.push("");
@@ -578,12 +580,13 @@ async function upsertStoreEvents(env, name, items, matchingUrls) {
         if (it.date) prev.date = it.date;
         if (it.deadline) prev.deadline = it.deadline;
         if (it.spots) prev.spots = it.spots; // fill/capacity changes over time
+        if (it.entry) prev.entry = it.entry;
         prev.lastSeen = now;
         prev.matched = matchingUrls.has(it.url);
       } else {
         byUrl.set(it.url, {
           title: it.title, url: it.url, date: it.date || "",
-          deadline: it.deadline || "", spots: it.spots || "",
+          deadline: it.deadline || "", spots: it.spots || "", entry: it.entry || "",
           firstSeen: now, lastSeen: now, matched: matchingUrls.has(it.url),
         });
       }
@@ -777,7 +780,7 @@ async function lineReply(env, replyToken, messageText) {
 const EVENTS_HTML =
 '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
 '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-'<title>Mew Events</title><style>' +
+'<title>ポケカ Events</title><style>' +
 '@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap");' +
 ':root{--pink-050:#FFF0F7;--pink-300:#FFA8D0;--pink-700:#FF4D9D;--pink-800:#C24A80;' +
 '--white:#FFFFFF;--grey-100:#F1F1F3;--grey-200:#E4E4E8;--grey-300:#CFCFD5;--grey-400:#A7A7B0;' +
@@ -809,6 +812,8 @@ const EVENTS_HTML =
 '.dl.soon{background:#FFE08A;color:#5C4708;font-weight:500}' +
 '.dl.past{background:var(--pink-800);color:#fff;font-weight:500}' +
 '.sp{flex:0 0 44px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
+'.et{flex:0 0 40px;font-size:9.5px;font-weight:500;text-align:center;border-radius:2px;padding:2px 0;white-space:nowrap}' +
+'.et.lot{background:#EDE4FA;color:#5B3B8C}.et.fcfs{background:#E2F0E6;color:#2F6B44}' +
 '.ad{flex:0 0 40px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.mk{flex:0 0 62px;display:flex;gap:10px}' +
 '.mk label{font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);cursor:pointer;' +
@@ -822,6 +827,7 @@ const EVENTS_HTML =
 '.hdr .sortable{cursor:pointer}.hdr .sortable:hover,.hdr .on{color:var(--pink-800)}' +
 '.hdr .s{border:0;padding:0;max-width:none;background:none}' +
 '.hdr .dl{padding:0;text-align:left}' +
+'.hdr .et{background:none;padding:0;text-align:left}' +
 'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
 'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
 '#status{color:var(--grey-500);font-size:11px}' +
@@ -842,9 +848,9 @@ const EVENTS_HTML =
 '.flabel{font-size:9px;font-weight:500;color:var(--grey-500);text-transform:uppercase;' +
 'letter-spacing:0.14em;margin:12px 0 2px}' +
 '.hint{font-size:11px;color:var(--grey-500);margin:2px 0 0}' +
-'@media(max-width:560px){.s,.ad,.sp{display:none}.d{flex-basis:62px}.dl{flex-basis:56px}}' +
+'@media(max-width:560px){.s,.ad,.sp{display:none}.d{flex-basis:62px}.dl{flex-basis:56px}.et{flex-basis:36px}}' +
 '</style></head><body>' +
-'<h1>Mew Events</h1><div class="rule"></div>' +
+'<h1>ポケカ Events</h1><div class="rule"></div>' +
 '<div class="bar" id="bar" style="display:none">' +
 '<input id="q" type="text" placeholder="Search titles&#8230;" autocomplete="off">' +
 '<select id="storeSel"></select>' +
@@ -854,7 +860,8 @@ const EVENTS_HTML =
 '<div class="hdr" id="hdr" style="display:none">' +
 '<span class="ad sortable" data-k="added">Added</span>' +
 '<span class="d sortable" data-k="when">Date</span><span class="t sortable" data-k="title">Event</span>' +
-'<span class="s sortable" data-k="store">Store</span><span class="sp">Spots</span>' +
+'<span class="s sortable" data-k="store">Store</span>' +
+'<span class="et sortable" data-k="entry">Type</span><span class="sp">Spots</span>' +
 '<span class="mk">K &#x30fb; R</span>' +
 '<span class="dl sortable" data-k="deadline">Entry &#x3006;</span></div>' +
 '<div id="root"></div><div id="oldwrap"></div>' +
@@ -915,6 +922,10 @@ const EVENTS_HTML =
 'var sh=e.store?storeHue(e.store):330;' +
 'sp.style.color="hsl("+sh+" 46% 38%)";sp.style.borderColor="hsl("+sh+" 46% 82%)";' +
 'sp.style.background="hsl("+sh+" 62% 96%)";r.appendChild(sp);' +
+'var et=mk("span","et",e.entry||"");' +
+'if(e.entry==="\\u62bd\\u9078")et.classList.add("lot");' +
+'else if(e.entry==="FCFS")et.classList.add("fcfs");' +
+'r.appendChild(et);' +
 'r.appendChild(mk("span","sp",e.spots||"\\u2014"));' +
 'var m=mk("span","mk");m.appendChild(box(e.url,"K"));m.appendChild(box(e.url,"R"));r.appendChild(m);' +
 'var dts=parseWhen(e.deadline);' +
@@ -931,6 +942,7 @@ const EVENTS_HTML =
 'if(k==="title")return d*String(a.title||"").localeCompare(String(b.title||""));' +
 'if(k==="store")return d*shortStore(a.store||"").localeCompare(shortStore(b.store||""));' +
 'if(k==="added")return d*((a.addedTs||0)-(b.addedTs||0));' +
+'if(k==="entry")return d*String(a.entry||"\\uffff").localeCompare(String(b.entry||"\\uffff"));' +
 'if(k==="deadline"){var x=parseWhen(a.deadline)||Infinity,y=parseWhen(b.deadline)||Infinity;return (x===y)?0:d*(x-y)}' +
 'return d*((a.when||0)-(b.when||0))}' +
 'function render(){' +

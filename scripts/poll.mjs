@@ -1,11 +1,13 @@
 /**
  * Tonamel → Mew Alerts poller (replaces Distill).
  *
- * Runs a real Chromium via Playwright, loads the store's page so the request
- * carries a genuine browser context (tonamel 403s bare server-side calls), then
- * calls their GraphQL API from inside the page. Posts each store's events to the
- * Worker in the same "title ||| url ||| date" format Distill used, so the Worker,
- * event board, filters and LINE alerts all keep working unchanged.
+ * Runs a real Chromium via Playwright and loads each store's page. Tonamel 403s
+ * bare server-side calls, so we prefer intercepting the SPA's own GraphQL
+ * responses (scrolling to pull in every page), falling back to our own in-page
+ * request and finally to scraping the rendered DOM. Posts each store's events
+ * to the Worker as
+ *   title ||| url ||| date ||| deadline ||| spots ||| entry
+ * where entry is "FCFS" or 抽選.
  *
  * Env:
  *   WEBHOOK_URL  — the Worker base URL (e.g. https://distill-alerts.mew-860.workers.dev)
@@ -31,7 +33,7 @@ const QUERY = `query getOrganizationGameCompetitions($organizationId: ID!, $game
       competitions(filter: $filter) {
         edges { node { id title status publicStatus
           tournaments { displayStartAt }
-          entryMenus { participantChosenNum endAt countSummary { currentEntrantNum } }
+          entryMenus { participantChosenNum endAt selectType forParticipation countSummary { currentEntrantNum } }
         } }
       }
     }
@@ -109,12 +111,21 @@ function nodesToEvents(edges) {
         .map((t) => Number(t?.displayStartAt))
         .filter((v) => Number.isFinite(v) && v > 0);
 
+      // How you get in: ORDER_BY_ENTRY = FCFS, SELECT_BY_ORGANIZER = 抽選
+      // (organiser draws). If an event mixes both, 抽選 wins — you have to be
+      // drawn to get in at all.
+      const types = new Set(menus.map((m) => m && m.selectType).filter(Boolean));
+      let entry = "";
+      if (types.has("SELECT_BY_ORGANIZER")) entry = "抽選";
+      else if (types.has("ORDER_BY_ENTRY")) entry = "FCFS";
+
       return {
         title: (n.title || "").replace(/\s*\|\|\|\s*/g, " ").trim(),
         url: `https://tonamel.com/competition/${n.id}`,
         date: starts.length ? fmtDate(String(Math.min(...starts))) : "",
         deadline: lastEnd ? fmtDate(String(lastEnd)) : "",
         spots: hasCounts ? `${entrants}/${capacity}` : "",
+        entry,
       };
     })
     .filter((e) => e.title);
@@ -230,10 +241,14 @@ async function fetchStore(page, store) {
 }
 
 async function post(store, events) {
-  // Wire format: title ||| url ||| date ||| deadline ||| spots
-  // (trailing fields are optional — the Worker tolerates 2- and 3-field lines)
+  // Wire format: title ||| url ||| date ||| deadline ||| spots ||| entry
+  // (trailing fields are optional — the Worker tolerates shorter lines)
   const text = events
-    .map((e) => `${e.title} ||| ${e.url} ||| ${e.date || ""} ||| ${e.deadline || ""} ||| ${e.spots || ""}`)
+    .map(
+      (e) =>
+        `${e.title} ||| ${e.url} ||| ${e.date || ""} ||| ${e.deadline || ""} ||| ` +
+        `${e.spots || ""} ||| ${e.entry || ""}`
+    )
     .join("\n");
   const body = new URLSearchParams({ name: store.name, uri: `https://tonamel.com/organization/${store.org}?game=${store.game}`, text });
   const resp = await fetch(WEBHOOK_URL, {
