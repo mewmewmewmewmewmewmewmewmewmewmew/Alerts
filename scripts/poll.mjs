@@ -82,15 +82,39 @@ function nodesToEvents(edges) {
     .map((e) => e?.node)
     .filter((n) => n && n.id && n.publicStatus === "PUBLIC")
     .map((n) => {
-      const menu = (n.entryMenus || [])[0] || null;
-      const entrants = menu?.countSummary?.currentEntrantNum;
-      const capacity = menu?.participantChosenNum;
+      // An event can have several entry menus (pre-lottery + same-day, or one
+      // per time slot). Registration is open until the LAST of them closes,
+      // and capacity is their total — reading only the first gets both wrong.
+      const all = n.entryMenus || [];
+      const participation = all.filter((m) => m && m.forParticipation !== false);
+      const menus = participation.length ? participation : all.filter(Boolean);
+
+      const ends = menus.map((m) => Number(m.endAt)).filter((v) => Number.isFinite(v) && v > 0);
+      const lastEnd = ends.length ? Math.max(...ends) : null;
+
+      const entrants = menus.reduce((sum, m) => {
+        const v = m.countSummary?.currentEntrantNum;
+        return v != null ? sum + v : sum;
+      }, 0);
+      const capacity = menus.reduce((sum, m) => {
+        const v = m.participantChosenNum;
+        return v != null ? sum + v : sum;
+      }, 0);
+      const hasCounts = menus.some(
+        (m) => m.countSummary?.currentEntrantNum != null && m.participantChosenNum != null
+      );
+
+      // Also fall back to the latest tournament start if the first is missing.
+      const starts = (n.tournaments || [])
+        .map((t) => Number(t?.displayStartAt))
+        .filter((v) => Number.isFinite(v) && v > 0);
+
       return {
         title: (n.title || "").replace(/\s*\|\|\|\s*/g, " ").trim(),
         url: `https://tonamel.com/competition/${n.id}`,
-        date: fmtDate(n.tournaments?.[0]?.displayStartAt),
-        deadline: fmtDate(menu?.endAt),
-        spots: entrants != null && capacity != null ? `${entrants}/${capacity}` : "",
+        date: starts.length ? fmtDate(String(Math.min(...starts))) : "",
+        deadline: lastEnd ? fmtDate(String(lastEnd)) : "",
+        spots: hasCounts ? `${entrants}/${capacity}` : "",
       };
     })
     .filter((e) => e.title);
