@@ -116,7 +116,7 @@ The note becomes the title and the date becomes its deadline (`7/26`, `締切8/2
 don't consume the monthly push quota, so this works even when alerts are capped.
 
 One-time setup: add the `LINE_CHANNEL_SECRET` secret in Cloudflare, then in the
-LINE Developers Console set the webhook URL to `https://pokeca.mew-860.workers.dev/line` and
+LINE Developers Console set the webhook URL to `https://distill-alerts.mew-860.workers.dev/line` and
 enable **Use webhook**.
 
 ## Alerts and the LINE quota

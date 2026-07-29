@@ -1,7 +1,10 @@
 # Cloudflare Worker config for Mew Alerts.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
 
-name = "pokeca"
+# Must match the Worker the Cloudflare Git integration is connected to —
+# Workers Builds overrides this field with the CI-configured name, so
+# changing it here does not rename anything.
+name = "distill-alerts"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 
