@@ -819,9 +819,10 @@ const EVENTS_HTML =
 /* yellow = closing within 3 days, pink fill = already closed */
 '.dl.soon{background:#FFE08A;color:#5C4708;font-weight:500}' +
 '.dl.past{background:var(--pink-800);color:#fff;font-weight:500}' +
-'.sp{flex:0 0 44px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
-'.et{flex:0 0 40px;font-size:9.5px;font-weight:500;text-align:center;border-radius:2px;padding:2px 0;white-space:nowrap}' +
-'.et.lot{background:#EDE4FA;color:#5B3B8C}.et.fcfs{background:#E2F0E6;color:#2F6B44}' +
+'.sp{flex:0 0 86px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
+'.sp .a{display:inline-block;width:22px;text-align:right}' +
+'.sp .b{display:inline-block;width:20px;text-align:left}' +
+'.sp .ty{margin-left:5px;color:var(--grey-600)}' +
 '.ad{flex:0 0 40px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.mk{flex:0 0 62px;display:flex;gap:10px}' +
 '.mk label{font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);cursor:pointer;' +
@@ -835,7 +836,6 @@ const EVENTS_HTML =
 '.hdr .sortable{cursor:pointer}.hdr .sortable:hover,.hdr .on{color:var(--pink-800)}' +
 '.hdr .s{border:0;padding:0;max-width:none;background:none}' +
 '.hdr .dl{padding:0;text-align:left}' +
-'.hdr .et{background:none;padding:0;text-align:left}' +
 'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
 'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
 '#status{color:var(--grey-500);font-size:11px}' +
@@ -856,7 +856,7 @@ const EVENTS_HTML =
 '.flabel{font-size:9px;font-weight:500;color:var(--grey-500);text-transform:uppercase;' +
 'letter-spacing:0.14em;margin:12px 0 2px}' +
 '.hint{font-size:11px;color:var(--grey-500);margin:2px 0 0}' +
-'@media(max-width:560px){.s,.ad,.sp{display:none}.d{flex-basis:62px}.dl{flex-basis:56px}.et{flex-basis:36px}}' +
+'@media(max-width:560px){.s,.ad,.sp{display:none}.d{flex-basis:62px}.dl{flex-basis:56px}}' +
 '</style></head><body>' +
 '<h1>ポケカ Events</h1><div class="rule"></div>' +
 '<div class="bar" id="bar" style="display:none">' +
@@ -869,7 +869,7 @@ const EVENTS_HTML =
 '<span class="ad sortable" data-k="added">Added</span>' +
 '<span class="d sortable" data-k="when">Date</span><span class="t sortable" data-k="title">Event</span>' +
 '<span class="s sortable" data-k="store">Store</span>' +
-'<span class="et sortable" data-k="entry">Type</span><span class="sp">Spots</span>' +
+'<span class="sp sortable" data-k="entry">Spots &#x30fb; Type</span>' +
 '<span class="mk">K &#x30fb; R</span>' +
 '<span class="dl sortable" data-k="deadline">Entry &#x3006;</span></div>' +
 '<div id="root"></div><div id="oldwrap"></div>' +
@@ -930,11 +930,13 @@ const EVENTS_HTML =
 'var sh=e.store?storeHue(e.store):330;' +
 'sp.style.color="hsl("+sh+" 46% 38%)";sp.style.borderColor="hsl("+sh+" 46% 82%)";' +
 'sp.style.background="hsl("+sh+" 62% 96%)";r.appendChild(sp);' +
-'var et=mk("span","et",e.entry||"");' +
-'if(e.entry==="\\u62bd\\u9078")et.classList.add("lot");' +
-'else if(e.entry==="FCFS")et.classList.add("fcfs");' +
-'r.appendChild(et);' +
-'r.appendChild(mk("span","sp",e.spots||"\\u2014"));' +
+'var spc=mk("span","sp");' +
+'if(e.spots&&String(e.spots).indexOf("/")!==-1){var pp=String(e.spots).split("/");' +
+'spc.appendChild(mk("span","a",pp[0]));spc.appendChild(document.createTextNode("/"));' +
+'spc.appendChild(mk("span","b",pp[1]))}' +
+'else{spc.appendChild(mk("span","a","\\u2014"))}' +
+'if(e.entry)spc.appendChild(mk("span","ty",e.entry));' +
+'r.appendChild(spc);' +
 'var m=mk("span","mk");m.appendChild(box(e.url,"K"));m.appendChild(box(e.url,"R"));r.appendChild(m);' +
 'var dts=parseWhen(e.deadline);' +
 'var dl=mk("span","dl",dts?("\\u3006"+fmtShort(dts)):"\\u2014");' +
