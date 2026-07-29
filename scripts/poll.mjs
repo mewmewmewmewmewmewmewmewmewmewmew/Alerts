@@ -52,6 +52,30 @@ function fmtDate(unixSeconds) {
   }).format(d).replace(/,/g, "");
 }
 
+/**
+ * Fallback: read the rendered listing straight out of the DOM. Slightly less
+ * data than the API (no exact timestamps — we take the card's date text), but
+ * it works whenever the page itself renders, which is what Distill relied on.
+ */
+async function scrapeStore(page) {
+  await page.waitForSelector("li.competition-item", { timeout: 20000 });
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll("li.competition-item a.nuxt-link")).map((a) => {
+      const t = a.querySelector(".title");
+      const title = (t ? t.textContent : a.textContent.split("\n")[0]).trim();
+      let date = "";
+      for (const s of a.querySelectorAll(".competition-data span")) {
+        const v = s.textContent.trim();
+        if (/20\d\d|\d{1,2}\/\d{1,2}|\d{1,2}月\d{1,2}日|Mon|Tue|Wed|Thu|Fri|Sat|Sun/.test(v)) {
+          date = v;
+          break;
+        }
+      }
+      return { title: title.replace(/\s*\|\|\|\s*/g, " "), url: a.href, date };
+    }).filter((e) => e.title && e.url)
+  );
+}
+
 async function fetchStore(page, store) {
   const referer = `https://tonamel.com/organization/${store.org}?game=${store.game}`;
   await page.goto(referer, { waitUntil: "domcontentloaded", timeout: 60000 });
@@ -80,15 +104,29 @@ async function fetchStore(page, store) {
   );
 
   if (result.status !== 200) {
-    throw new Error(`GraphQL HTTP ${result.status}: ${result.body.slice(0, 200)}`);
+    console.log(`  API said HTTP ${result.status} — falling back to DOM scrape`);
+    return scrapeStore(page);
   }
 
-  const data = JSON.parse(result.body);
-  if (data.errors) throw new Error(`GraphQL errors: ${JSON.stringify(data.errors).slice(0, 200)}`);
+  let data;
+  try {
+    data = JSON.parse(result.body);
+  } catch (e) {
+    console.log("  API returned non-JSON — falling back to DOM scrape");
+    return scrapeStore(page);
+  }
+  if (data.errors) {
+    console.log(`  API errors (${JSON.stringify(data.errors).slice(0, 120)}) — falling back to DOM scrape`);
+    return scrapeStore(page);
+  }
 
   const edges = data?.data?.organization?.game?.competitions?.edges;
-  if (!Array.isArray(edges)) throw new Error("unexpected response shape");
+  if (!Array.isArray(edges)) {
+    console.log("  unexpected API shape — falling back to DOM scrape");
+    return scrapeStore(page);
+  }
 
+  console.log("  via API");
   return edges
     .map((e) => e?.node)
     .filter((n) => n && n.id && n.publicStatus === "PUBLIC")
