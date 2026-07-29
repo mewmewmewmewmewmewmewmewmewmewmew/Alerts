@@ -807,6 +807,7 @@ const EVENTS_HTML =
 '.bar input[type=text]{flex:1;min-width:120px}' +
 '.row{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--grey-200);' +
 'border-left:3px solid transparent}' +
+'.row.new{outline:1.5px solid #E8873A;outline-offset:-1.5px}' +
 '.d{flex:0 0 74px;font-family:var(--font-data);font-size:12px;font-weight:500;color:var(--ink);white-space:nowrap}' +
 '.t{flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
 '.t a{color:var(--ink);text-decoration:none}.t a:hover{color:var(--pink-800);text-decoration:underline}' +
@@ -900,6 +901,8 @@ const EVENTS_HTML =
 'var t=Date.parse(s);return isNaN(t)?null:t}' +
 'function fmtDate(ts){if(!ts)return "\\u2014";var d=new Date(ts);return (d.getMonth()+1)+"/"+d.getDate()+" "+DAYS[d.getDay()]}' +
 'function fmtShort(ts){if(!ts)return "\\u2014";var d=new Date(ts);return (d.getMonth()+1)+"/"+d.getDate()}' +
+'function isToday(ts){if(!ts)return false;var d=new Date(ts),n=new Date();' +
+'return d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth()&&d.getDate()===n.getDate()}' +
 'function shortStore(n){var p=String(n).split("@");return (p.length>1?p[p.length-1]:n).trim()}' +
 /* Hues are spread evenly across the stores actually present, so no two ever
    land close enough to look alike (hashing names gave near-collisions). */
@@ -920,7 +923,7 @@ const EVENTS_HTML =
 '.then(function(r){if(!r.ok){c.checked=!v;alert("save failed")}else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
 '.catch(function(){c.checked=!v;alert("save failed")})};' +
 'l.appendChild(c);l.appendChild(document.createTextNode(who));return l}' +
-'function row(e){var r=mk("div","row");' +
+'function row(e){var r=mk("div","row"+(isToday(e.addedTs)?" new":""));' +
 'if(e.rule){r.style.borderLeftColor=e.rule.color;r.style.background=tint(e.rule.color)}' +
 'r.appendChild(mk("span","ad",fmtShort(e.addedTs)));' +
 'r.appendChild(mk("span","d",fmtDate(e.when)));' +
