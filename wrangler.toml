@@ -1,7 +1,7 @@
 # Cloudflare Worker config for Mew Alerts.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
 
-name = "mew-alerts"
+name = "pokeca"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 
