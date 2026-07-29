@@ -882,6 +882,12 @@ const EVENTS_HTML =
 'function fmtDate(ts){if(!ts)return "\\u2014";var d=new Date(ts);return (d.getMonth()+1)+"/"+d.getDate()+" "+DAYS[d.getDay()]}' +
 'function fmtShort(ts){if(!ts)return "\\u2014";var d=new Date(ts);return (d.getMonth()+1)+"/"+d.getDate()}' +
 'function shortStore(n){var p=String(n).split("@");return (p.length>1?p[p.length-1]:n).trim()}' +
+/* Hues are spread evenly across the stores actually present, so no two ever
+   land close enough to look alike (hashing names gave near-collisions). */
+'var HUES={};' +
+'function buildHues(names){var ks=names.slice().sort();HUES={};' +
+'ks.forEach(function(n,i){HUES[n]=Math.round(i*360/Math.max(ks.length,1)+200)%360})}' +
+'function storeHue(n){return HUES[n]!=null?HUES[n]:330}' +
 'function ruleFor(title){var t=String(title||"").toLowerCase();if(!t)return null;' +
 'for(var i=0;i<(CFG.exclude||[]).length;i++){if(t.indexOf(String(CFG.exclude[i]).toLowerCase())!==-1)return null}' +
 'for(var j=0;j<(CFG.rules||[]).length;j++){var r=CFG.rules[j];' +
@@ -901,7 +907,10 @@ const EVENTS_HTML =
 'if(e.custom)r.appendChild(mk("span","pin","\\ud83d\\udccc"));' +
 'var t=mk("span","t");var a=document.createElement("a");a.href=e.url;a.textContent=e.title;' +
 'a.target="_blank";a.rel="noopener";a.title=e.title;t.appendChild(a);r.appendChild(t);' +
-'r.appendChild(mk("span","s",e.store?shortStore(e.store):"\\ud83d\\udccc"));' +
+'var sp=mk("span","s",e.store?shortStore(e.store):"pinned");' +
+'var sh=e.store?storeHue(e.store):330;' +
+'sp.style.color="hsl("+sh+" 46% 38%)";sp.style.borderColor="hsl("+sh+" 46% 82%)";' +
+'sp.style.background="hsl("+sh+" 62% 96%)";r.appendChild(sp);' +
 'var dts=parseWhen(e.deadline);' +
 'var dl=mk("span","dl",dts?("\\u3006"+fmtShort(dts)):"\\u2014");' +
 'if(dts){if(dts<Date.now())dl.classList.add("past");' +
@@ -990,6 +999,7 @@ const EVENTS_HTML =
 'e.store=n;var w=parseWhen(e.date);e.when=(w!=null)?w:(Date.parse(e.firstSeen)||0);' +
 'e.addedTs=Date.parse(e.firstSeen)||0;ITEMS.push(e)})});' +
 'var names={};ITEMS.forEach(function(e){if(e.store)names[e.store]=1});' +
+'buildHues(Object.keys(names));' +
 'var sel=document.getElementById("storeSel");sel.appendChild(new Option("All",""));' +
 'sel.appendChild(new Option("Tonamel \\u2014 all stores","__tonamel__"));' +
 'Object.keys(names).sort().forEach(function(n){sel.appendChild(new Option("  "+shortStore(n),n))});' +
