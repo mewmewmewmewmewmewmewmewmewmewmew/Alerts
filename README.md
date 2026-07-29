@@ -148,7 +148,34 @@ Fields (all optional):
 - **`minChars`** — ignore changes smaller than this many characters.
 - **`enabled`** — set `false` to mute a monitor without deleting it.
 
-## Linked capture — per-event links via a Distill JS selector (recommended)
+## GitHub Actions poller (replaces Distill — recommended)
+
+`scripts/poll.mjs` + `.github/workflows/poll.yml` do what Distill did, for free:
+a scheduled GitHub Action launches real Chromium (Playwright), opens each store
+page so the request has a genuine browser context, then calls Tonamel's GraphQL
+API **from inside the page** — which gets past the 403 that blocks server-side
+calls. It posts `title ||| url ||| date` per store to the Worker, exactly the
+format the linked-capture path already expects, so alerts, the event board,
+filters and K/R marks all keep working unchanged.
+
+Why it beats the browser-extension route: no selectors to maintain, dates come
+from the API's own timestamps (`tournaments[0].displayStartAt`, formatted in
+JST), no per-store UI clicking, and no monthly credits.
+
+**Setup**
+1. Repo → Settings → Secrets and variables → Actions → New repository secret:
+   `WEBHOOK_URL` = your Worker base URL (e.g. `https://<worker>.workers.dev`).
+2. Edit `scripts/stores.json` to list the stores to watch — each entry is
+   `{ "name": "<monitor name>", "org": "<orgId>", "game": "pokemon_card" }`.
+   The `name` must match the monitor name your filters use; `org` is the id in
+   `tonamel.com/organization/<org>?game=…`.
+3. Actions tab → **Poll Tonamel** → **Run workflow** to trigger it once, then it
+   runs on the schedule (default every 30 min; edit the cron in the workflow).
+
+Note: GitHub's scheduled runs are best-effort and can lag at busy times; the
+`workflow_dispatch` button always runs immediately.
+
+## Linked capture — per-event links via a Distill JS selector (legacy)
 
 Tonamel's page is a JS-rendered SPA and its GraphQL API returns **403 to
 non-browser IPs** (so the scheduled poller below can't reach it from Cloudflare).

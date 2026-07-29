@@ -1,0 +1,31 @@
+name: Poll Tonamel
+
+# Replaces Distill: runs a real browser on a schedule and posts each store's
+# events to the Worker. Free on GitHub-hosted runners for public repos.
+on:
+  schedule:
+    - cron: "*/30 * * * *" # every 30 minutes (UTC)
+  workflow_dispatch: {} # lets you run it on demand from the Actions tab
+
+concurrency:
+  group: poll-tonamel
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright + Chromium
+        run: npm install playwright@1.48.0 && npx playwright install --with-deps chromium
+
+      - name: Poll stores and post to the Worker
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: node scripts/poll.mjs
