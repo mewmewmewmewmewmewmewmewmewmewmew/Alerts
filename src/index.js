@@ -805,8 +805,9 @@ const EVENTS_HTML =
 '.pin{flex:0 0 auto;font-size:11px}' +
 '.dl{flex:0 0 62px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-600);' +
 'white-space:nowrap;text-align:center;padding:3px 4px;border-radius:2px}' +
-'.dl.soon{color:var(--pink-800);font-weight:500;background:var(--pink-050)}' +
-'.dl.past{background:var(--red);color:#fff;font-weight:500}' +
+/* yellow = closing within 3 days, pink fill = already closed */
+'.dl.soon{background:#FFE08A;color:#5C4708;font-weight:500}' +
+'.dl.past{background:var(--pink-800);color:#fff;font-weight:500}' +
 '.sp{flex:0 0 44px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.ad{flex:0 0 40px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);white-space:nowrap}' +
 '.mk{flex:0 0 62px;display:flex;gap:10px}' +
