@@ -63,7 +63,7 @@ folded into a **Past events** section. Columns are sortable (click a header) and
 there's a search box and a store/category picker.
 
 - **K / R marks** cycle through five states: empty (undecided) → grey −
-  (not entering) → pink ✓ (entered) → gold ★ (won) → red ✕ (lost). Stored
+  (not entering) → pink ✓ (entered) → green ★ (won) → dark red ✕ (lost). Stored
   server-side, so both of you see the same state from any device. Each header
   sorts by that person's state in that order, undecided first.
 - **Entry 〆** shows when registration closes — pink within 3 days, **red once

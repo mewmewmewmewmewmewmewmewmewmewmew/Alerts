@@ -863,8 +863,8 @@ const EVENTS_HTML =
 'display:flex;align-items:center;justify-content:center}' +
 '.m3.sk{background:var(--grey-500);border-color:var(--grey-500)}' +
 '.m3.en{background:var(--pink-700);border-color:var(--pink-700)}' +
-'.m3.wn{background:#B8860B;border-color:#B8860B;box-shadow:0 0 0 2px #F2DFA0;font-size:11px}' +
-'.m3.ls{background:#B3261E;border-color:#B3261E;box-shadow:0 0 0 2px #F5C6C2;font-weight:700}' +
+'.m3.wn{background:#2E7D32;border-color:#2E7D32;box-shadow:0 0 0 2px #B7DFB9;font-size:11px}' +
+'.m3.ls{background:#6B1710;border-color:#6B1710;box-shadow:0 0 0 2px #D9B3AE;font-weight:700}' +
 'input[type=checkbox]{width:14px;height:14px;accent-color:var(--pink-700);cursor:pointer;margin:0}' +
 '.del{flex:0 0 auto;background:none;border:0;color:var(--grey-400);cursor:pointer;font-size:11px;padding:0 0 0 4px}' +
 '.del:hover{color:var(--red)}' +
