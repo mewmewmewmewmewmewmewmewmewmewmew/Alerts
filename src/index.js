@@ -634,12 +634,15 @@ async function handleEventsData(env) {
 
 // Toggle K/R "entered" checkmarks — shared state in KV so both people see it.
 /**
- * Marks are tri-state per person: "" (undecided), "x" (looked, not entering),
- * "y" (entered). Older records stored booleans, so normalise on read.
+ * Marks cycle per person: "" (undecided) → "x" (not entering) → "y"
+ * (entered) → "w" (won) → "l" (lost). Older records stored booleans,
+ * so normalise on read.
  */
 function markState(v) {
-  if (v === true || v === "y" || v === "1") return "y";
-  if (v === "x") return "x";
+  if (v === true || v === "y" || v === "1") return "y"; // entered
+  if (v === "x") return "x"; // looked, not entering
+  if (v === "w") return "w"; // won
+  if (v === "l") return "l"; // lost
   return "";
 }
 
@@ -860,6 +863,8 @@ const EVENTS_HTML =
 'display:flex;align-items:center;justify-content:center}' +
 '.m3.sk{background:var(--grey-500);border-color:var(--grey-500)}' +
 '.m3.en{background:var(--pink-700);border-color:var(--pink-700)}' +
+'.m3.wn{background:#B8860B;border-color:#B8860B;box-shadow:0 0 0 2px #F2DFA0;font-size:11px}' +
+'.m3.ls{background:#B3261E;border-color:#B3261E;box-shadow:0 0 0 2px #F5C6C2;font-weight:700}' +
 'input[type=checkbox]{width:14px;height:14px;accent-color:var(--pink-700);cursor:pointer;margin:0}' +
 '.del{flex:0 0 auto;background:none;border:0;color:var(--grey-400);cursor:pointer;font-size:11px;padding:0 0 0 4px}' +
 '.del:hover{color:var(--red)}' +
@@ -949,14 +954,18 @@ const EVENTS_HTML =
 'for(var k=0;k<(r.include||[]).length;k++){if(t.indexOf(String(r.include[k]).toLowerCase())!==-1)return r}}' +
 'return null}' +
 'function tint(hex){return hex+"14"}' +
-'var CYCLE=["","x","y"];' +
-'function st(v){return (v===true||v==="y"||v==="1")?"y":(v==="x"?"x":"")}' +
+'var CYCLE=["","x","y","w","l"];' +
+'var GLYPH={x:"\\u2212",y:"\\u2713",w:"\\u2605",l:"\\u2715"};' +
+'var CLS={x:"sk",y:"en",w:"wn",l:"ls"};' +
+'var WORD={x:"not entering",y:"entered",w:"won",l:"lost"};' +
+'function st(v){if(v===true||v==="y"||v==="1")return "y";' +
+'return (v==="x"||v==="w"||v==="l")?v:""}' +
 'function box(u,who){var b=document.createElement("button");var cur=st(MARKS[u]&&MARKS[u][who]);' +
-'function paint(v){b.className="m3"+(v==="x"?" sk":(v==="y"?" en":""));' +
-'b.textContent=v==="x"?"\\u2715":(v==="y"?"\\u2713":"");' +
-'b.title=who+": "+(v==="y"?"entered":(v==="x"?"not entering":"undecided"))}' +
+'function paint(v){b.className="m3"+(v?" "+CLS[v]:"");' +
+'b.textContent=GLYPH[v]||"";' +
+'b.title=who+": "+(WORD[v]||"undecided")}' +
 'paint(cur);' +
-'b.onclick=function(){var prev=cur;cur=CYCLE[(CYCLE.indexOf(cur)+1)%3];paint(cur);' +
+'b.onclick=function(){var prev=cur;cur=CYCLE[(CYCLE.indexOf(cur)+1)%CYCLE.length];paint(cur);' +
 'var v=cur;fetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+v)' +
 '.then(function(r){if(!r.ok){cur=prev;paint(prev);alert("save failed")}' +
 'else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
@@ -995,7 +1004,7 @@ const EVENTS_HTML =
 'if(k==="title")return d*String(a.title||"").localeCompare(String(b.title||""));' +
 'if(k==="store")return d*shortStore(a.store||"").localeCompare(shortStore(b.store||""));' +
 'if(k==="added")return d*((a.addedTs||0)-(b.addedTs||0));' +
-'if(k==="K"||k==="R"){var rk=function(v){v=st(v);return v==="y"?2:(v==="x"?1:0)};' +
+'if(k==="K"||k==="R"){var rk=function(v){return CYCLE.indexOf(st(v))};' +
 'var am=rk(MARKS[a.url]&&MARKS[a.url][k]),bm=rk(MARKS[b.url]&&MARKS[b.url][k]);' +
 'if(am!==bm)return d*(am-bm);return (a.when||0)-(b.when||0)}' +
 'if(k==="entry")return d*String(a.entry||"\\uffff").localeCompare(String(b.entry||"\\uffff"));' +
