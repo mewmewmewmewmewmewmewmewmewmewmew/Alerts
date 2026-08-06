@@ -129,6 +129,19 @@ the Worker logs `LINE FAILED (429)` and **leaves those events unseen so they
 retry on the next capture** — nothing is lost, it just waits for the reset.
 Everything still reaches the board meanwhile.
 
+## How much history is kept
+
+Each store keeps up to **1500 events**. That is not a storage limit — a 25 MiB
+KV value would hold ~90,000 — it is CPU: the Worker re-parses the whole blob on
+every poll, and free-tier Workers get 10ms CPU per request (1500 records is
+~4ms). Raise `EVENT_CAP` if you move to a paid plan.
+
+When a store is over the cap, eviction protects what you would actually miss:
+anything either of you has marked, and anything still upcoming. Only unmarked
+past events are dropped, oldest **event date** first — ranking by event date
+rather than capture time keeps the choice stable, since a dropped event that
+reappears in a later capture would otherwise look new and churn the list.
+
 ## Diagnostics (`/health`)
 
 `GET /health` returns the last 50 decisions, newest first — `Baseline`,
@@ -164,7 +177,7 @@ State lives in KV (Cloudflare → Storage → KV → `mew-state`):
 | Key | Holds |
 | --- | ----- |
 | `linked::<store>` | URLs already alerted on — delete to re-baseline that store |
-| `events::store::<store>` | The board's event records |
+| `events::store::<store>` | The board's event records (capped at 1500 each) |
 | `events::custom` | Chat-pinned links |
 | `events::marks` | K/R checkmarks |
 | `config::override` | Filters saved from the board (delete to fall back to `config.json`) |

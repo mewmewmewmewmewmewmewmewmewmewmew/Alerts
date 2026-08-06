@@ -572,7 +572,11 @@ function html(body, status = 200) {
 // ════════════════════════════════════════════════════════════════════════════
 const EVENTS_STORE_PREFIX = "events::store::";
 const EVENTS_CUSTOM_KEY = "events::custom";
-const MARKS_KEY = "events::marks"; // { [eventUrl]: {K: bool, R: bool} } — shared entered-state
+const MARKS_KEY = "events::marks";
+// Per-store event cap. Not a storage limit (a 25 MiB KV value holds ~90k of
+// these); the binding constraint is that the Worker re-parses the whole blob
+// on every poll, and free-tier Workers get 10ms CPU — ~1500 records is ~4ms.
+const EVENT_CAP = 1500; // { [eventUrl]: {K: bool, R: bool} } — shared entered-state
 
 async function upsertStoreEvents(env, name, items, matchingUrls) {
   try {
@@ -600,11 +604,45 @@ async function upsertStoreEvents(env, name, items, matchingUrls) {
       }
     }
     let out = Array.from(byUrl.values());
-    if (out.length > 300) out = out.slice(out.length - 300);
+    if (out.length > EVENT_CAP) out = await trimEvents(env, out);
     await env.MEW_STATE.put(key, JSON.stringify(out));
   } catch (err) {
     console.log("upsertStoreEvents error: " + err);
   }
+}
+
+/**
+ * Evict down to EVENT_CAP, protecting what you'd actually miss: anything
+ * either of you marked, and anything still upcoming. Only unmarked past
+ * events are dropped, oldest-first.
+ */
+async function trimEvents(env, list) {
+  let marks = {};
+  try { marks = normalizeMarks(JSON.parse((await env.MEW_STATE.get(MARKS_KEY)) || "{}")); } catch (e) { marks = {}; }
+
+  const cutoff = Date.now() - 86400000;
+  const protectedEvents = [];
+  const droppable = [];
+  for (const e of list) {
+    const m = marks[e.url];
+    const marked = !!(m && (m.K || m.R));
+    const when = Date.parse(e.date);
+    const upcoming = !isFinite(when) || when >= cutoff;
+    (marked || upcoming ? protectedEvents : droppable).push(e);
+  }
+
+  const room = Math.max(0, EVENT_CAP - protectedEvents.length);
+  if (droppable.length <= room) return list;
+
+  // Rank by event date, not firstSeen: a dropped event that reappears in a
+  // later capture gets a fresh firstSeen, which would make it outrank events
+  // that were never dropped and churn a different slice out on every poll.
+  const eventTime = (e) => Date.parse(e.date) || Date.parse(e.firstSeen) || 0;
+  droppable.sort((a, b) => eventTime(a) - eventTime(b));
+  const keep = new Set(protectedEvents.map((e) => e.url));
+  for (const e of droppable.slice(droppable.length - room)) keep.add(e.url);
+  console.log("trimEvents: dropped " + (list.length - keep.size) + " unmarked past events");
+  return list.filter((e) => keep.has(e.url)); // preserve original order
 }
 
 async function handleEventsData(env) {
