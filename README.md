@@ -58,9 +58,10 @@ it re-baselines and shows up twice.
 
 ## The event board (`/events`)
 
-One chronological list: upcoming events plus the last 7 days, with older ones
-folded into a **Past events** section. Columns are sortable (click a header) and
-there's a search box and a store/category picker.
+One chronological list: upcoming events plus today, with older ones folded into
+a **Past events** section. Columns are sortable (click a header) and there's a
+search box and a store/category picker. On a narrow screen the table scrolls
+sideways rather than dropping columns — drag to reach Store, Spots and Entry 〆.
 
 - **K / R marks** cycle through five states: empty (undecided) → grey −
   (not entering) → pink ✓ (entered) → green ★ (won) → dark red ✕ (lost). Stored

@@ -878,6 +878,8 @@ const EVENTS_HTML =
 'details{margin-top:22px}summary{cursor:pointer;color:var(--grey-500);font-size:9px;font-weight:500;' +
 'text-transform:uppercase;letter-spacing:0.14em;padding:6px 0}' +
 '#status{color:var(--grey-500);font-size:11px}' +
+'.tbl{overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}' +
+'.tblin{min-width:640px}' +
 /* bottom filter drawer */
 '#dock{position:fixed;left:0;right:0;bottom:0;background:var(--white);border-top:1px solid var(--grey-300);' +
 'box-shadow:0 -2px 12px rgba(0,0,0,.06);z-index:20}' +
@@ -895,7 +897,7 @@ const EVENTS_HTML =
 '.flabel{font-size:9px;font-weight:500;color:var(--grey-500);text-transform:uppercase;' +
 'letter-spacing:0.14em;margin:12px 0 2px}' +
 '.hint{font-size:11px;color:var(--grey-500);margin:2px 0 0}' +
-'@media(max-width:560px){.s,.ad,.sp{display:none}.d{flex-basis:62px}.dl{flex-basis:56px}}' +
+'@media(max-width:560px){body{padding-left:10px;padding-right:10px}}' +
 '</style></head><body>' +
 '<h1>ポケカ Events</h1><div class="rule"></div>' +
 '<div class="bar" id="bar" style="display:none">' +
@@ -904,6 +906,7 @@ const EVENTS_HTML =
 '<label style="font-size:12px;color:var(--grey-600);display:flex;align-items:center;gap:4px">' +
 '<input type="checkbox" id="onlyMatch" checked>matches only</label></div>' +
 '<p id="status">Loading&#8230;</p>' +
+'<div class="tbl"><div class="tblin">' +
 '<div class="hdr" id="hdr" style="display:none">' +
 '<span class="ad sortable" data-k="added">Added</span>' +
 '<span class="d sortable" data-k="when">Date</span><span class="t sortable" data-k="title">Event</span>' +
@@ -913,6 +916,7 @@ const EVENTS_HTML =
 '<span class="sortable" data-k="R">R</span></span>' +
 '<span class="dl sortable" data-k="deadline">Entry &#x3006;</span></div>' +
 '<div id="root"></div><div id="oldwrap"></div>' +
+'</div></div>' +
 '<div id="dock"><div id="dockbar">' +
 '<button id="toggle">&#9881; Filters</button><span id="rulesum" class="hint"></span>' +
 '</div><div id="panel">' +
