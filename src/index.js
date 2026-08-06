@@ -978,7 +978,7 @@ const EVENTS_HTML =
 'function row(e){var r=mk("div","row"+(isToday(e.addedTs)?" new":""));' +
 'if(e.rule){r.style.borderLeftColor=e.rule.color;r.style.background=tint(e.rule.color)}' +
 'r.appendChild(mk("span","ad",fmtShort(e.addedTs)));' +
-'r.appendChild(mk("span","d",fmtDate(e.when)));' +
+'r.appendChild(mk("span","d",e.nodate?"\\u2014":fmtDate(e.when)));' +
 'if(e.custom)r.appendChild(mk("span","pin","\\ud83d\\udccc"));' +
 'var t=mk("span","t");var a=document.createElement("a");a.href=e.url;a.textContent=e.title;' +
 'a.target="_blank";a.rel="noopener";a.title=e.title;t.appendChild(a);r.appendChild(t);' +
@@ -1026,8 +1026,8 @@ const EVENTS_HTML =
 'else if(st&&(e.store||"")!==st)return false;' +
 'if(q&&String(e.title||"").toLowerCase().indexOf(q)===-1)return false;return true});' +
 'var cutoff=Date.now()-1*86400000;' +
-'var recent=list.filter(function(e){return e.when>=cutoff}).sort(cmp);' +
-'var old=list.filter(function(e){return e.when<cutoff}).sort(cmp);' +
+'var recent=list.filter(function(e){return e.nodate||e.when>=cutoff}).sort(cmp);' +
+'var old=list.filter(function(e){return !e.nodate&&e.when<cutoff}).sort(cmp);' +
 'var root=document.getElementById("root");root.innerHTML="";' +
 'recent.forEach(function(e){root.appendChild(row(e))});' +
 'var ow=document.getElementById("oldwrap");ow.innerHTML="";' +
@@ -1078,10 +1078,12 @@ const EVENTS_HTML =
 'fetch("/events/data").then(function(r){return r.json()}).then(function(data){' +
 'MARKS=data.marks||{};CFG=data.config||{rules:[],exclude:[]};ITEMS=[];' +
 '(data.custom||[]).forEach(function(e){var w=parseWhen(e.date);e.store="";e.custom=true;' +
+'e.nodate=(w==null);' +
 'e.when=(w!=null)?w:(Date.parse(e.addedAt)||Date.now());e.addedTs=Date.parse(e.addedAt)||0;' +
 'e.deadline=e.date||"";ITEMS.push(e)});' +
 'Object.keys(data.stores||{}).forEach(function(n){(data.stores[n]||[]).forEach(function(e){' +
-'e.store=n;var w=parseWhen(e.date);e.when=(w!=null)?w:(Date.parse(e.firstSeen)||0);' +
+'e.store=n;var w=parseWhen(e.date);e.nodate=(w==null);' +
+'e.when=(w!=null)?w:(Date.parse(e.firstSeen)||0);' +
 'e.addedTs=Date.parse(e.firstSeen)||0;ITEMS.push(e)})});' +
 'var names={};ITEMS.forEach(function(e){if(e.store)names[e.store]=1});' +
 'buildHues(Object.keys(names));' +
