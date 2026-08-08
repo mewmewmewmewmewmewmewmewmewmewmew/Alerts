@@ -71,6 +71,8 @@ sideways rather than dropping columns — drag to reach Store, Spots and Entry �
   it has passed**.
 - **Spots** shows entrants/capacity, refreshed every poll.
 - **📌 Pinned** rows come from the LINE chat (below).
+- **Colour swatches** at the top are one per filter rule, all on by default —
+  click one to hide that rule's events. The choice is remembered per browser.
 
 ## Changing filters
 

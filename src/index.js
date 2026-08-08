@@ -871,6 +871,9 @@ const EVENTS_HTML =
 '.bar input,.bar select{font-family:var(--font-body);font-size:12px;color:var(--ink);' +
 'background:var(--white);border:1px solid var(--grey-300);border-radius:2px;padding:5px 7px}' +
 '.bar input[type=text]{flex:1;min-width:120px}' +
+'.sws{display:flex;gap:5px;align-items:center}' +
+'.sw{width:17px;height:17px;padding:0;border-radius:3px;border:2px solid;cursor:pointer}' +
+'.sw.off{background:var(--white)}' +
 '.row{position:relative;display:flex;align-items:center;gap:10px;padding:8px 6px;' +
 'border-bottom:1px solid var(--grey-200);border-left:3px solid transparent}' +
 '.row.new::before{content:"";position:absolute;left:-3px;top:0;bottom:0;width:3px;' +
@@ -939,6 +942,7 @@ const EVENTS_HTML =
 '</style></head><body>' +
 '<h1>ポケカ Events</h1><div class="rule"></div>' +
 '<div class="bar" id="bar" style="display:none">' +
+'<span id="sws" class="sws"></span>' +
 '<input id="q" type="text" placeholder="Search titles&#8230;" autocomplete="off">' +
 '<select id="storeSel"></select>' +
 '<label style="font-size:12px;color:var(--grey-600);display:flex;align-items:center;gap:4px">' +
@@ -968,6 +972,17 @@ const EVENTS_HTML =
 '<span id="savemsg" class="hint"></span></div>' +
 '</div></div><script>' +
 'var MARKS={},ITEMS=[],CFG={rules:[],exclude:[]};' +
+'var RULEOFF={};' +
+'try{(JSON.parse(localStorage.getItem("mewruleoff"))||[]).forEach(function(k){RULEOFF[k]=1})}catch(_e){}' +
+'function saveRuleOff(){try{localStorage.setItem("mewruleoff",' +
+'JSON.stringify(Object.keys(RULEOFF).filter(function(k){return RULEOFF[k]})))}catch(_e){}}' +
+'function buildSwatches(){var host=document.getElementById("sws");host.innerHTML="";' +
+'(CFG.rules||[]).forEach(function(r){var b=document.createElement("button");b.className="sw";' +
+'function paint(){var off=!!RULEOFF[r.label];b.style.borderColor=r.color;' +
+'b.style.background=off?"transparent":r.color;b.classList.toggle("off",off);' +
+'b.title=r.label+(off?" \\u2014 hidden":"")}' +
+'paint();b.onclick=function(){RULEOFF[r.label]=!RULEOFF[r.label];saveRuleOff();paint();render()};' +
+'host.appendChild(b)})}' +
 'var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
 'var SORT;try{SORT=JSON.parse(localStorage.getItem("mewsort"))||{k:"when",dir:1}}catch(_e){SORT={k:"when",dir:1}}' +
 'function mk(tag,cls,txt){var el=document.createElement(tag);if(cls)el.className=cls;if(txt!=null)el.textContent=txt;return el}' +
@@ -1058,6 +1073,7 @@ const EVENTS_HTML =
 'var st=document.getElementById("storeSel").value;' +
 'var om=document.getElementById("onlyMatch").checked;' +
 'var list=ITEMS.filter(function(e){' +
+'if(e.rule&&RULEOFF[e.rule.label])return false;' +
 'if(om&&!e.rule&&!e.custom)return false;' +
 'if(st==="__tonamel__"){if(!e.store)return false}' +
 'else if(st==="__pinned__"){if(!e.custom)return false}' +
@@ -1109,7 +1125,7 @@ const EVENTS_HTML =
 'fetch("/events/config",{method:"POST",headers:{"content-type":"application/json"},' +
 'body:JSON.stringify({rules:rules,exclude:exclude})})' +
 '.then(function(r){return r.json()}).then(function(j){' +
-'if(j.ok){CFG=j.config;msg.textContent="Saved \\u2713";render();setTimeout(function(){msg.textContent=""},2000)}' +
+'if(j.ok){CFG=j.config;msg.textContent="Saved \\u2713";buildSwatches();render();setTimeout(function(){msg.textContent=""},2000)}' +
 'else msg.textContent="Error: "+(j.error||"failed")})' +
 '.catch(function(e){msg.textContent="Error: "+e.message})};' +
 /* ---- load ---- */
@@ -1129,7 +1145,7 @@ const EVENTS_HTML =
 'sel.appendChild(new Option("Tonamel \\u2014 all stores","__tonamel__"));' +
 'Object.keys(names).sort().forEach(function(n){sel.appendChild(new Option("  "+shortStore(n),n))});' +
 'sel.appendChild(new Option("\\ud83d\\udccc Pinned","__pinned__"));' +
-'document.getElementById("bar").style.display="flex";' +
+'buildSwatches();document.getElementById("bar").style.display="flex";' +
 'if(ITEMS.length)document.getElementById("hdr").style.display="flex";' +
 'var om=document.getElementById("onlyMatch");' +
 'try{var sv=localStorage.getItem("mewonly");if(sv!==null)om.checked=(sv==="1")}catch(_e){}' +
