@@ -699,6 +699,7 @@ function normalizeMarks(marks) {
 }
 
 async function handleEventsMark(request, env, url) {
+  if (!pinOk(request, env, url)) return json({ error: "pin" }, 401);
   const target = url.searchParams.get("url") || "";
   const who = url.searchParams.get("who") || "";
   const val = markState(url.searchParams.get("val"));
@@ -722,6 +723,7 @@ async function handleEventsMark(request, env, url) {
 /** GET returns the effective filter; POST saves a new one to KV. */
 async function handleEventsConfig(request, env) {
   if (request.method === "POST") {
+    if (!pinOk(request, env, new URL(request.url))) return json({ error: "pin" }, 401);
     let body;
     try {
       body = await request.json();
@@ -737,6 +739,7 @@ async function handleEventsConfig(request, env) {
 }
 
 async function handleEventsRemove(request, env, url) {
+  if (!pinOk(request, env, url)) return json({ error: "pin" }, 401);
   const target = url.searchParams.get("url") || "";
   if (!target) return json({ error: "missing url" }, 400);
   let custom = [];
@@ -810,6 +813,17 @@ function parseDeadline(text) {
     if (new Date(y, mo - 1, d).getTime() < now.getTime() - 45 * 86400000) y++;
   }
   return y + "-" + String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+}
+
+/**
+ * Writes (marks, filters, un-pinning) require BOARD_PIN when that secret is
+ * set. Reads stay open. If the secret is unset the board behaves exactly as
+ * before, so setting it is opt-in and never locks anyone out by surprise.
+ */
+function pinOk(request, env, url) {
+  if (!env.BOARD_PIN) return true;
+  const pin = url.searchParams.get("pin") || request.headers.get("x-board-pin") || "";
+  return safeEqual(pin, env.BOARD_PIN);
 }
 
 /** Constant-time string compare (used for LINE signature verification). */
@@ -972,6 +986,12 @@ const EVENTS_HTML =
 '<span id="savemsg" class="hint"></span></div>' +
 '</div></div><script>' +
 'var MARKS={},ITEMS=[],CFG={rules:[],exclude:[]};' +
+'var PIN="";try{PIN=localStorage.getItem("mewpin")||""}catch(_e){}' +
+'function wfetch(u,o){var sep=u.indexOf("?")===-1?"?":"&";' +
+'var go=function(){return fetch(u+sep+"pin="+encodeURIComponent(PIN),o)};' +
+'return go().then(function(r){if(r.status!==401)return r;' +
+'var p=prompt("Board PIN:");if(p==null)return r;' +
+'PIN=p;try{localStorage.setItem("mewpin",p)}catch(_e){}return go()})}' +
 'var RULEOFF={};' +
 'try{(JSON.parse(localStorage.getItem("mewruleoff"))||[]).forEach(function(k){RULEOFF[k]=1})}catch(_e){}' +
 'function saveRuleOff(){try{localStorage.setItem("mewruleoff",' +
@@ -1023,7 +1043,7 @@ const EVENTS_HTML =
 'b.title=who+": "+(WORD[v]||"undecided")}' +
 'paint(cur);' +
 'b.onclick=function(){var prev=cur;cur=CYCLE[(CYCLE.indexOf(cur)+1)%CYCLE.length];paint(cur);' +
-'var v=cur;fetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+v)' +
+'var v=cur;wfetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+v)' +
 '.then(function(r){if(!r.ok){cur=prev;paint(prev);alert("save failed")}' +
 'else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
 '.catch(function(){cur=prev;paint(prev);alert("save failed")})};' +
@@ -1054,7 +1074,7 @@ const EVENTS_HTML =
 'r.appendChild(dl);' +
 'if(e.custom){var x=mk("button","del","\\u2715");' +
 'x.onclick=function(){if(!confirm("Remove this pinned link?"))return;' +
-'fetch("/events/remove?url="+encodeURIComponent(e.url)).then(function(r2){if(r2.ok)r.remove()})};' +
+'wfetch("/events/remove?url="+encodeURIComponent(e.url)).then(function(r2){if(r2.ok)r.remove()})};' +
 'r.appendChild(x)}' +
 'return r}' +
 'function cmp(a,b){var k=SORT.k,d=SORT.dir;' +
@@ -1122,7 +1142,7 @@ const EVENTS_HTML =
 'if(d._get){var v=d._get();if(v)rules.push(v)}});' +
 'var exclude=document.getElementById("excl").value.split(",").map(function(s){return s.trim()}).filter(Boolean);' +
 'var msg=document.getElementById("savemsg");msg.textContent="Saving\\u2026";' +
-'fetch("/events/config",{method:"POST",headers:{"content-type":"application/json"},' +
+'wfetch("/events/config",{method:"POST",headers:{"content-type":"application/json"},' +
 'body:JSON.stringify({rules:rules,exclude:exclude})})' +
 '.then(function(r){return r.json()}).then(function(j){' +
 'if(j.ok){CFG=j.config;msg.textContent="Saved \\u2713";buildSwatches();render();setTimeout(function(){msg.textContent=""},2000)}' +

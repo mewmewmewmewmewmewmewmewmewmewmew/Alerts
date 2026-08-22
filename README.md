@@ -17,8 +17,11 @@ GitHub Actions (every 30 min)          Cloudflare Worker              LINE
                                        /line    ← paste a link in chat to pin it
 ```
 
-Nothing runs on your machine and nothing needs a subscription: Actions is free
-for public repos, and the Worker runs on Cloudflare's free tier.
+Nothing runs on your machine and nothing needs a subscription: the Worker runs
+on Cloudflare's free tier, and Actions is free and unmetered **for public
+repos**. Keep this repo public — on a private repo Actions is metered (2,000
+free minutes/month) and 30-minute polling burns that in about two weeks, after
+which every run fails with no runner until the 1st of the next month.
 
 ## Files
 
@@ -121,7 +124,7 @@ The note becomes the title and the date becomes its deadline (`7/26`, `締切8/2
 don't consume the monthly push quota, so this works even when alerts are capped.
 
 One-time setup: add the `LINE_CHANNEL_SECRET` secret in Cloudflare, then in the
-LINE Developers Console set the webhook URL to `https://distill-alerts.mew-860.workers.dev/line` and
+LINE Developers Console set the webhook URL to `https://<your-worker>/line` and
 enable **Use webhook**.
 
 ## Alerts and the LINE quota
@@ -166,8 +169,22 @@ pinning is set up, the LINE webhook URL.
 
 The Worker auto-deploys from this repo (Cloudflare → Workers → connected to
 Git). Secrets live in **Worker → Settings → Variables and Secrets**:
-`LINE_TOKEN`, `GROUP_ID`, `LINE_CHANNEL_SECRET`. The poller needs one repo
-secret, `WEBHOOK_URL`, pointing at the Worker.
+
+| Secret | Purpose |
+| ------ | ------- |
+| `LINE_TOKEN` | LINE Messaging API channel access token |
+| `GROUP_ID` | LINE group/user id to push to |
+| `LINE_CHANNEL_SECRET` | verifies `/line` webhook signatures (chat pinning) |
+| `BOARD_PIN` | *optional* — required to change marks, filters or pins |
+
+The poller needs one repo secret, `WEBHOOK_URL`, pointing at the Worker.
+
+**`BOARD_PIN` matters on a public repo.** The Worker URL appears in the commit
+history, so anyone who finds it could otherwise edit your filters (which drive
+the LINE alerts) or delete pinned links. With the secret set, reads stay open
+and writes need the PIN — the board asks once per browser and remembers it.
+Leave it unset and the board behaves exactly as before. The capture webhook is
+never gated, so the poller keeps working either way.
 
 From a checkout you can also run `npm run deploy`, `npm run dev`, or
 `npm run tail` (live Worker logs).
