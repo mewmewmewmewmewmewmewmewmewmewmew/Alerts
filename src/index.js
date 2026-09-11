@@ -672,9 +672,9 @@ async function handleEventsData(env) {
 
 // Toggle K/R "entered" checkmarks — shared state in KV so both people see it.
 /**
- * Marks cycle per person: "" (undecided) → "x" (not entering) → "y"
- * (entered) → "q" (waiting list) → "w" (won) → "l" (lost). Older records
- * stored booleans, so normalise on read.
+ * Marks cycle per person: "" (undecided) → "y" (entered) → "q" (waiting
+ * list) → "w" (won) → "l" (lost) → "x" (not entering). Older records stored
+ * booleans, so normalise on read.
  */
 function markState(v) {
   if (v === true || v === "y" || v === "1") return "y"; // entered
@@ -1033,7 +1033,7 @@ const EVENTS_HTML =
 'for(var k=0;k<(r.include||[]).length;k++){if(t.indexOf(String(r.include[k]).toLowerCase())!==-1)return r}}' +
 'return null}' +
 'function tint(hex){return hex+"14"}' +
-'var CYCLE=["","x","y","q","w","l"];' +
+'var CYCLE=["","y","q","w","l","x"];' +
 'var GLYPH={x:"\\u2212",y:"\\u2713",q:"\\u25cf",w:"\\u2605",l:"\\u2715"};' +
 'var CLS={x:"sk",y:"en",q:"wt",w:"wn",l:"ls"};' +
 'var WORD={x:"not entering",y:"entered",q:"waiting list",w:"won",l:"lost"};' +

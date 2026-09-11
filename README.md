@@ -66,11 +66,11 @@ a **Past events** section. Columns are sortable (click a header) and there's a
 search box and a store/category picker. On a narrow screen the table scrolls
 sideways rather than dropping columns — drag to reach Store, Spots and Entry 〆.
 
-- **K / R marks** cycle through six states: empty (undecided) → grey −
-  (not entering) → pink ✓ (entered) → blue ● (waiting list) → green ★ (won) →
-  dark red ✕ (lost). Stored server-side, so both of you see the same state from
+- **K / R marks** cycle through six states: empty (undecided) → pink ✓
+  (entered) → blue ● (waiting list) → green ★ (won) → dark red ✕ (lost) → grey
+  − (not entering). Stored server-side, so both of you see the same state from
   any device. Each header sorts by that person's state in that order, undecided
-  first.
+  first and passed-over events last.
 - **Entry 〆** shows when registration closes — pink within 3 days, **red once
   it has passed**.
 - **Spots** shows entrants/capacity, refreshed every poll.
