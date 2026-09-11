@@ -673,12 +673,13 @@ async function handleEventsData(env) {
 // Toggle K/R "entered" checkmarks — shared state in KV so both people see it.
 /**
  * Marks cycle per person: "" (undecided) → "x" (not entering) → "y"
- * (entered) → "w" (won) → "l" (lost). Older records stored booleans,
- * so normalise on read.
+ * (entered) → "q" (waiting list) → "w" (won) → "l" (lost). Older records
+ * stored booleans, so normalise on read.
  */
 function markState(v) {
   if (v === true || v === "y" || v === "1") return "y"; // entered
   if (v === "x") return "x"; // looked, not entering
+  if (v === "q") return "q"; // on the waiting list (queued)
   if (v === "w") return "w"; // won
   if (v === "l") return "l"; // lost
   return "";
@@ -918,6 +919,7 @@ const EVENTS_HTML =
 'display:flex;align-items:center;justify-content:center}' +
 '.m3.sk{background:var(--grey-500);border-color:var(--grey-500)}' +
 '.m3.en{background:var(--pink-700);border-color:var(--pink-700)}' +
+'.m3.wt{background:#2563EB;border-color:#2563EB;font-size:8px}' +
 '.m3.wn{background:#2E7D32;border-color:#2E7D32;box-shadow:0 0 0 2px #B7DFB9;font-size:11px}' +
 '.m3.ls{background:#6B1710;border-color:#6B1710;box-shadow:0 0 0 2px #D9B3AE;font-weight:700}' +
 'input[type=checkbox]{width:14px;height:14px;accent-color:var(--pink-700);cursor:pointer;margin:0}' +
@@ -1031,12 +1033,12 @@ const EVENTS_HTML =
 'for(var k=0;k<(r.include||[]).length;k++){if(t.indexOf(String(r.include[k]).toLowerCase())!==-1)return r}}' +
 'return null}' +
 'function tint(hex){return hex+"14"}' +
-'var CYCLE=["","x","y","w","l"];' +
-'var GLYPH={x:"\\u2212",y:"\\u2713",w:"\\u2605",l:"\\u2715"};' +
-'var CLS={x:"sk",y:"en",w:"wn",l:"ls"};' +
-'var WORD={x:"not entering",y:"entered",w:"won",l:"lost"};' +
+'var CYCLE=["","x","y","q","w","l"];' +
+'var GLYPH={x:"\\u2212",y:"\\u2713",q:"\\u25cf",w:"\\u2605",l:"\\u2715"};' +
+'var CLS={x:"sk",y:"en",q:"wt",w:"wn",l:"ls"};' +
+'var WORD={x:"not entering",y:"entered",q:"waiting list",w:"won",l:"lost"};' +
 'function st(v){if(v===true||v==="y"||v==="1")return "y";' +
-'return (v==="x"||v==="w"||v==="l")?v:""}' +
+'return (v==="x"||v==="q"||v==="w"||v==="l")?v:""}' +
 'function box(u,who){var b=document.createElement("button");var cur=st(MARKS[u]&&MARKS[u][who]);' +
 'function paint(v){b.className="m3"+(v?" "+CLS[v]:"");' +
 'b.textContent=GLYPH[v]||"";' +
