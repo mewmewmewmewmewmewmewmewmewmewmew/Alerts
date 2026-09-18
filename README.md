@@ -1,21 +1,33 @@
 # ポケカ Events
 
-Tracks Pokémon-card event listings across 晴れる屋2 stores on
-[Tonamel](https://tonamel.com), pushes a **LINE alert for genuinely new events
-that match your filters**, and keeps a shared **event board** you and a friend
-can tick off.
+A two-tab board with a LINE alert behind each tab:
+
+- **Tonamel** — event listings across 晴れる屋2 stores on
+  [Tonamel](https://tonamel.com), with shared K/R marks you and a friend tick off.
+- **X** — posts from watched X accounts (restock and lottery alerts), filtered
+  the same way.
+
+Both push a **LINE message only for genuinely new items matching your filters**,
+and each tab has its own rules, colours and keywords.
 
 ## How it works
 
 ```
 GitHub Actions (every 30 min)          Cloudflare Worker              LINE
   Playwright opens each store   ──▶   dedupe vs. seen        ──push──▶ group
-  page, captures its events            filter by rules
-                                       store for the board
+  page, captures its events            filter by rules                  ▲
+                                       store for the board              │
+Cloudflare Cron (every 5 min)               │                           │
+  Worker calls the X API        ──────▶ dedupe vs. since_id ────push────┘
                                             │
-                                       /events  ← board (list, K/R marks)
-                                       /line    ← paste a link in chat to pin it
+                                       /events      ← board, both tabs
+                                       /line        ← paste a link in chat to pin
 ```
+
+Tonamel needs a real browser (its API refuses non-browser callers), so that
+half runs from GitHub Actions. X is a plain authenticated HTTPS call, so the
+Worker does it itself on a **Cloudflare Cron Trigger** — which also fires on
+time, where GitHub deprioritises scheduled runs and can drift by hours.
 
 Nothing runs on your machine and nothing needs a subscription: the Worker runs
 on Cloudflare's free tier, and Actions is free and unmetered **for public
@@ -30,8 +42,8 @@ which every run fails with no runner until the 1st of the next month.
 | `scripts/poll.mjs`       | The poller — opens each store, extracts events, posts   |
 | `scripts/stores.json`    | Which stores to watch                                   |
 | `.github/workflows/poll.yml` | Schedule (every 30 min) + manual **Run workflow**   |
-| `src/index.js`           | The Worker — dedupe, filter, LINE push, event board      |
-| `config.json`            | Committed filter rules (overridable from the board)      |
+| `src/index.js`           | The Worker — dedupe, filter, LINE push, both board tabs   |
+| `config.json`            | Committed filter rules, both tabs (overridable in the UI) |
 | `wrangler.toml`          | Worker config + KV binding                               |
 | `apps-script/Code.gs`    | The original Apps Script relay (historical reference)    |
 
@@ -58,6 +70,29 @@ Add an entry to `scripts/stores.json` and push:
 `org` is the id in `tonamel.com/organization/<org>?game=<game>`. The `name` is
 the key for the board and stored state — **don't rename an existing store**, or
 it re-baselines and shows up twice.
+
+## The X tab
+
+Watches up to five X accounts and lists their posts newest-first, tinted by
+whichever rule they match — the same mechanism as the event rules, with its own
+separate keyword set. Click **⚙ Filters** while the X tab is open to edit the
+handles and rules; the drawer follows whichever tab you are on.
+
+**Only matching posts are pushed to LINE.** That is the point of the filter
+here: a busy restock account can out-post the free LINE quota on its own (200
+pushes/month, shared with the event alerts), so keep the rules tight. Everything
+captured still reaches the tab whether or not it matched — untick *matches only*
+to see the rest.
+
+Costs: X bills **$0.005 per post read**, with no subscription or minimum. Polling
+uses `since_id`, so a quiet account returns no posts and costs nothing; a busy
+one at ~15 posts/day is roughly **$2/month**. Retweets and replies are excluded
+at the API so you are never billed for them.
+
+One-time setup: create an X developer app, then add its bearer token as the
+`X_BEARER_TOKEN` secret in Cloudflare. Until that exists the tab says so and the
+cron does nothing. The first poll is a **baseline** — it records where the
+timeline is without alerting, so you don't get a wall of history.
 
 ## The event board (`/events`)
 
@@ -107,9 +142,20 @@ Committed defaults live in `config.json`:
     { "label": "開封", "include": ["開封"], "color": "#FF4D9D" }
   ],
   "exclude": ["学生以下限定"],
-  "minChars": 1
+  "minChars": 1,
+  "x": {
+    "accounts": ["BEEEEF999"],
+    "rules": [
+      { "label": "抽選", "include": ["抽選"], "color": "#1D9BF0" },
+      { "label": "先着", "include": ["先着"], "color": "#FF4D9D" }
+    ],
+    "exclude": ["抽選結果", "当選発表"]
+  }
 }
 ```
+
+The `x` block seeds the X tab and follows the same rules; it is stored
+separately (`config::x`) so saving one tab's filters never touches the other's.
 
 ## Pinning links from the LINE chat
 
@@ -152,7 +198,9 @@ reappears in a later capture would otherwise look new and churn the list.
 
 `GET /health` returns the last 50 decisions, newest first — `Baseline`,
 `No new`, `Sent 3: …`, or `LINE FAILED (429): …`. This is the first place to
-look when an alert didn't arrive.
+look when an alert didn't arrive. X decisions appear there too, under
+`@handle`. `GET /x/poll` runs the X watch immediately instead of waiting for
+the cron (PIN-gated when `BOARD_PIN` is set).
 
 ## Custom domain
 
@@ -176,6 +224,7 @@ Git). Secrets live in **Worker → Settings → Variables and Secrets**:
 | `LINE_TOKEN` | LINE Messaging API channel access token |
 | `GROUP_ID` | LINE group/user id to push to |
 | `LINE_CHANNEL_SECRET` | verifies `/line` webhook signatures (chat pinning) |
+| `X_BEARER_TOKEN` | X API v2 bearer token — powers the X tab; unset = tab idle |
 | `BOARD_PIN` | *optional* — required to change marks, filters or pins |
 
 The poller needs one repo secret, `WEBHOOK_URL`, pointing at the Worker.
@@ -200,4 +249,9 @@ State lives in KV (Cloudflare → Storage → KV → `mew-state`):
 | `events::store::<store>` | The board's event records (capped at 1500 each) |
 | `events::custom` | Chat-pinned links |
 | `events::marks` | K/R checkmarks |
-| `config::override` | Filters saved from the board (delete to fall back to `config.json`) |
+| `config::override` | Event filters saved from the board (delete to fall back to `config.json`) |
+| `config::x` | X filters and watched handles (same fallback) |
+| `posts::x::<handle>` | Captured posts for the X tab (newest 600 each) |
+| `x::since::<handle>` | Newest post id already pulled — delete to re-baseline |
+| `x::pending::<handle>` | Matched posts whose LINE push failed, awaiting retry |
+| `x::uid::<handle>` | Cached handle → numeric id, so we look it up once |

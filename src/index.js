@@ -35,6 +35,15 @@ const LINK_DELIM = " ||| "; // separates title and url in a linked capture
 const LINKED_PREFIX = "linked::";
 const DIAG_KEY = "diag::recent"; // ring buffer of recent webhook decisions
 
+// ── X (Twitter) watch ───────────────────────────────────────────────────────
+const X_CONFIG_KEY = "config::x";
+const X_POSTS_PREFIX = "posts::x::";  // per-handle list of captured posts
+const X_SINCE_PREFIX = "x::since::";  // newest post id already pulled
+const X_UID_PREFIX = "x::uid::";      // handle → numeric user id (cached)
+const X_PENDING_PREFIX = "x::pending::"; // matched posts awaiting a LINE push
+const POST_CAP = 600;   // posts kept per handle for the board
+const X_MAX_RESULTS = 20; // per poll; reads are billed per post returned
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -45,6 +54,12 @@ export default {
       return json({ recent });
     }
     if (url.pathname === "/events/config") return handleEventsConfig(request, env);
+    if (url.pathname === "/x/config") return handleXConfig(request, env);
+    // Pull X now instead of waiting for the cron — used by the board's refresh.
+    if (url.pathname === "/x/poll") {
+      if (!pinOk(request, env, url)) return json({ error: "pin" }, 401);
+      return json(await pollX(env));
+    }
     // Public event board + its data / management endpoints.
     if (url.pathname === "/events") return html(EVENTS_HTML);
     if (url.pathname === "/events/data") return handleEventsData(env);
@@ -63,6 +78,13 @@ export default {
     return handleWebhook(request, env);
   },
 
+  // Cron Trigger (see wrangler.toml). X is a plain authenticated HTTPS call,
+  // so unlike Tonamel it needs no browser and can run here — which also means
+  // it runs on Cloudflare's schedule rather than GitHub's, where scheduled
+  // runs get deprioritised and drift by hours.
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(pollX(env));
+  },
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -526,6 +548,236 @@ function normalizeConfig(c) {
   return out;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// X (Twitter) watch — pulls an account's new posts, filters them, alerts
+// ════════════════════════════════════════════════════════════════════════════
+/**
+ * Same rule shape as the event filter, plus the handles to watch. Seeded from
+ * config.json's "x" section, overridden by whatever is saved from the board.
+ */
+async function loadXConfig(env) {
+  let override = null;
+  try {
+    const raw = await env.MEW_STATE.get(X_CONFIG_KEY);
+    if (raw) override = JSON.parse(raw);
+  } catch (err) {
+    console.log("X config parse error: " + err);
+  }
+  const src = override || (seedConfig && seedConfig.x) || {};
+  let out;
+  try {
+    out = normalizeConfig(src);
+  } catch (err) {
+    out = { ...DEFAULTS };
+  }
+  out.accounts = (Array.isArray(src.accounts) ? src.accounts : [])
+    .map((s) => String(s).trim().replace(/^@/, ""))
+    .filter((s) => /^[A-Za-z0-9_]{1,15}$/.test(s))
+    .slice(0, 5);
+  return out;
+}
+
+/** Resolve @handle → numeric id once, then cache it forever. */
+async function resolveXUser(env, handle) {
+  const key = X_UID_PREFIX + handle.toLowerCase();
+  const cached = await env.MEW_STATE.get(key);
+  if (cached) return cached;
+  const res = await xFetch(env, "https://api.x.com/2/users/by/username/" + handle);
+  const id = res && res.data && res.data.id ? String(res.data.id) : "";
+  if (id) await env.MEW_STATE.put(key, id);
+  return id;
+}
+
+async function xFetch(env, url) {
+  const resp = await fetch(url, {
+    headers: { authorization: "Bearer " + env.X_BEARER_TOKEN, "user-agent": "mew-alerts/1.0" },
+  });
+  const body = await resp.text();
+  if (!resp.ok) {
+    const err = new Error("X API " + resp.status + ": " + body.slice(0, 200));
+    err.status = resp.status;
+    throw err;
+  }
+  try {
+    return JSON.parse(body);
+  } catch (e) {
+    throw new Error("X API returned non-JSON: " + body.slice(0, 120));
+  }
+}
+
+/**
+ * One pass over every watched handle. Runs from the Cron Trigger, and from
+ * /x/poll for an on-demand refresh.
+ *
+ * Reads are billed per post returned, so this never re-reads: `since_id`
+ * advances even when the LINE push fails, and posts that could not be pushed
+ * go on a pending queue to retry on the next pass. That is the opposite of the
+ * Tonamel path, where re-capturing is free and we hold the alert back instead.
+ */
+async function pollX(env) {
+  const out = { accounts: [], skipped: "" };
+  if (!env.X_BEARER_TOKEN) {
+    out.skipped = "X_BEARER_TOKEN not set";
+    return out;
+  }
+  const cfg = await loadXConfig(env);
+  if (!cfg.accounts.length) {
+    out.skipped = "no accounts configured";
+    return out;
+  }
+
+  for (const handle of cfg.accounts) {
+    const res = { handle, fetched: 0, matched: 0, sent: 0, error: "" };
+    try {
+      const uid = await resolveXUser(env, handle);
+      if (!uid) throw new Error("could not resolve @" + handle);
+
+      const since = await env.MEW_STATE.get(X_SINCE_PREFIX + handle);
+      let url = "https://api.x.com/2/users/" + uid + "/tweets" +
+        "?max_results=" + X_MAX_RESULTS +
+        "&exclude=retweets,replies" +
+        "&tweet.fields=created_at";
+      // Without a since_id the first run would pull (and bill for) a full page
+      // just to establish a baseline, so take the newest post only.
+      if (since) url += "&since_id=" + encodeURIComponent(since);
+      else url = url.replace("max_results=" + X_MAX_RESULTS, "max_results=5");
+
+      const data = await xFetch(env, url);
+      const raw = Array.isArray(data.data) ? data.data : [];
+      res.fetched = raw.length;
+
+      const posts = raw.map((t) => ({
+        id: String(t.id),
+        text: String(t.text || ""),
+        url: "https://x.com/" + handle + "/status/" + t.id,
+        createdAt: t.created_at || "",
+        handle,
+      }));
+
+      // Advance the cursor even when nothing matches, so we never pay to read
+      // the same posts twice. The API reports newest_id itself; fall back to
+      // comparing ids (numeric strings: longer wins, else lexicographic).
+      const newest = (data.meta && data.meta.newest_id) ||
+        posts.map((p) => p.id).reduce(maxId, since || "");
+      if (newest) await env.MEW_STATE.put(X_SINCE_PREFIX + handle, String(newest));
+
+      const fresh = [];
+      for (const p of posts) {
+        const rule = matchRule(p.text, cfg);
+        p.matched = !!rule;
+        if (rule) fresh.push(p);
+      }
+      res.matched = fresh.length;
+
+      if (posts.length) await storeXPosts(env, handle, posts);
+
+      // A first run with no since_id is a baseline: record it, don't alert.
+      if (!since) {
+        await logDecision(env, "@" + handle, "Baseline (" + posts.length + " posts)");
+        out.accounts.push(res);
+        continue;
+      }
+
+      const pendKey = X_PENDING_PREFIX + handle;
+      let pending = [];
+      try { pending = JSON.parse((await env.MEW_STATE.get(pendKey)) || "[]"); } catch (e) { pending = []; }
+      const seen = new Set(pending.map((p) => p.id));
+      for (const p of fresh) if (!seen.has(p.id)) pending.push(p);
+      if (pending.length > 40) pending = pending.slice(pending.length - 40);
+
+      if (!pending.length) {
+        await logDecision(env, "@" + handle, "No new matches (" + posts.length + " posts)");
+        out.accounts.push(res);
+        continue;
+      }
+
+      const send = await sendToLine(env, buildXMessage(handle, pending));
+      if (send.ok) {
+        res.sent = pending.length;
+        await env.MEW_STATE.put(pendKey, "[]");
+        await logDecision(env, "@" + handle, "Sent " + pending.length + ": " +
+          pending.map((p) => firstLine(p.text)).join(" / ").slice(0, 300));
+      } else {
+        await env.MEW_STATE.put(pendKey, JSON.stringify(pending));
+        await logDecision(env, "@" + handle, "LINE FAILED (" + send.status + ") for " +
+          pending.length + " queued — will retry next poll");
+      }
+    } catch (err) {
+      res.error = String((err && err.message) || err);
+      await logDecision(env, "@" + handle, "X poll failed: " + res.error.slice(0, 200));
+    }
+    out.accounts.push(res);
+  }
+  return out;
+}
+
+async function storeXPosts(env, handle, posts) {
+  const key = X_POSTS_PREFIX + handle;
+  let list = [];
+  try { list = JSON.parse((await env.MEW_STATE.get(key)) || "[]"); } catch (e) { list = []; }
+  const byId = new Map(list.map((p) => [p.id, p]));
+  const now = new Date().toISOString();
+  for (const p of posts) {
+    const prev = byId.get(p.id);
+    if (prev) { prev.text = p.text; prev.matched = p.matched; }
+    else byId.set(p.id, { ...p, firstSeen: now });
+  }
+  let out = Array.from(byId.values());
+  if (out.length > POST_CAP) {
+    // Posts are a feed, not a to-do list — nothing here is worth protecting
+    // the way a marked event is, so just keep the newest.
+    out.sort((a, b) => postTime(a) - postTime(b));
+    out = out.slice(out.length - POST_CAP);
+  }
+  await env.MEW_STATE.put(key, JSON.stringify(out));
+}
+
+function postTime(p) {
+  return Date.parse(p.createdAt) || Date.parse(p.firstSeen) || 0;
+}
+
+/** Larger of two snowflake ids, which are decimal strings too big for Number. */
+function maxId(a, b) {
+  a = String(a || ""); b = String(b || "");
+  if (!a) return b;
+  if (!b) return a;
+  if (a.length !== b.length) return a.length > b.length ? a : b;
+  return a > b ? a : b;
+}
+
+function firstLine(s) {
+  return String(s || "").split("\n")[0].trim().slice(0, 60);
+}
+
+function buildXMessage(handle, posts) {
+  const head = posts.length === 1 ? "\u{1F426} @" + handle : "\u{1F426} @" + handle + " ×" + posts.length;
+  const body = posts.map((p) => {
+    const t = String(p.text || "").replace(/https:\/\/t\.co\/\S+/g, "").trim();
+    return t.slice(0, 220) + "\n" + p.url;
+  }).join("\n\n");
+  return head + "\n\n" + body;
+}
+
+/** GET returns the effective X filter; POST saves a new one to KV. */
+async function handleXConfig(request, env) {
+  if (request.method === "GET") return json({ config: await loadXConfig(env) });
+  if (request.method !== "POST") return text("Method not allowed", 405);
+  const url = new URL(request.url);
+  if (!pinOk(request, env, url)) return json({ error: "pin" }, 401);
+  try {
+    const incoming = await request.json();
+    const cfg = normalizeConfig(incoming);
+    cfg.accounts = (Array.isArray(incoming.accounts) ? incoming.accounts : [])
+      .map((s) => String(s).trim().replace(/^@/, ""))
+      .filter((s) => /^[A-Za-z0-9_]{1,15}$/.test(s))
+      .slice(0, 5);
+    await env.MEW_STATE.put(X_CONFIG_KEY, JSON.stringify(cfg));
+    return json({ ok: true, config: cfg });
+  } catch (err) {
+    return json({ error: String((err && err.message) || err) }, 400);
+  }
+}
+
 /** First rule whose keywords appear in the title, or null. Excludes win. */
 function matchRule(title, cfg) {
   const t = lc(title);
@@ -667,7 +919,23 @@ async function handleEventsData(env) {
   // Ship the filter too: the board highlights client-side, so editing rules
   // recolours every stored event immediately instead of only re-captured ones.
   const config = await loadConfig(env);
-  return json({ custom, stores, marks, config });
+
+  // X tab: every watched handle's posts, newest first.
+  const xconfig = await loadXConfig(env);
+  let posts = [];
+  try {
+    for (const handle of xconfig.accounts) {
+      let list = [];
+      try { list = JSON.parse((await env.MEW_STATE.get(X_POSTS_PREFIX + handle)) || "[]"); } catch (e) { list = []; }
+      posts = posts.concat(list);
+    }
+    posts.sort((a, b) => postTime(b) - postTime(a));
+  } catch (err) {
+    console.log("x posts read error: " + err);
+  }
+  const xready = !!env.X_BEARER_TOKEN;
+
+  return json({ custom, stores, marks, config, posts, xconfig, xready });
 }
 
 // Toggle K/R "entered" checkmarks — shared state in KV so both people see it.
@@ -944,8 +1212,9 @@ const EVENTS_HTML =
 '#dockbar button{font-family:var(--font-body);font-size:12px;border:1px solid var(--grey-300);' +
 'background:var(--white);color:var(--ink);border-radius:2px;padding:6px 12px;cursor:pointer}' +
 '#dockbar button.primary{background:var(--pink-700);border-color:var(--pink-700);color:#fff}' +
-'#panel{max-width:720px;margin:0 auto;padding:0 16px 14px;display:none;max-height:56vh;overflow:auto}' +
-'#panel.open{display:block}' +
+'#panel,#xpanel{max-width:720px;margin:0 auto;padding:0 16px 14px;display:none;' +
+'max-height:56vh;overflow:auto}' +
+'#panel.open,#xpanel.open{display:block}' +
 '.frow{display:flex;align-items:center;gap:8px;margin:8px 0}' +
 '.frow input[type=text]{flex:1;min-width:0;font-family:var(--font-body);font-size:12px;padding:6px 8px;' +
 'border:1px solid var(--grey-300);border-radius:2px;color:var(--ink);background:var(--white)}' +
@@ -954,9 +1223,37 @@ const EVENTS_HTML =
 '.flabel{font-size:9px;font-weight:500;color:var(--grey-500);text-transform:uppercase;' +
 'letter-spacing:0.14em;margin:12px 0 2px}' +
 '.hint{font-size:11px;color:var(--grey-500);margin:2px 0 0}' +
-'@media(max-width:560px){body{padding-left:10px;padding-right:10px}}' +
+/* tabs */
+'.tabs{display:flex;gap:2px;margin:0 0 14px;border-bottom:1px solid var(--grey-200)}' +
+'.tab{font-family:var(--font-display);font-size:12px;font-weight:600;letter-spacing:0.04em;' +
+'background:none;border:0;border-bottom:2px solid transparent;color:var(--grey-500);' +
+'padding:7px 13px;cursor:pointer;margin-bottom:-1px}' +
+'.tab:hover{color:var(--ink)}' +
+'.tab.on{color:var(--pink-800);border-bottom-color:var(--pink-700)}' +
+'.tab .n{font-family:var(--font-data);font-size:10px;color:var(--grey-400);margin-left:6px}' +
+'.tab.on .n{color:var(--pink-700)}' +
+/* X posts */
+'.prow{position:relative;display:flex;gap:10px;padding:10px 6px 10px 9px;' +
+'border-bottom:1px solid var(--grey-200);border-left:3px solid transparent}' +
+'.prow.new::before{content:"";position:absolute;left:-3px;top:0;bottom:0;width:3px;' +
+'background:#E23D28;animation:mewpulse 1.4s ease-in-out infinite}' +
+'@media(prefers-reduced-motion:reduce){.prow.new::before{animation:none}}' +
+'.pt{flex:0 0 64px;font-family:var(--font-data);font-size:10.5px;color:var(--grey-400);' +
+'white-space:nowrap;padding-top:2px}' +
+'.pb{flex:1;min-width:0}' +
+'.ptx{display:block;font-size:12.5px;line-height:1.6;color:var(--ink);text-decoration:none;' +
+'white-space:pre-wrap;overflow-wrap:anywhere}' +
+'.ptx:hover{color:var(--pink-800)}' +
+'.phandle{font-size:9px;font-weight:500;color:var(--grey-500);font-family:var(--font-data);' +
+'margin-top:5px;display:block}' +
+'@media(max-width:560px){body{padding-left:10px;padding-right:10px}.pt{flex-basis:52px}}' +
 '</style></head><body>' +
 '<h1>ポケカ Events</h1><div class="rule"></div>' +
+'<nav class="tabs">' +
+'<button class="tab on" id="tab-tonamel" data-p="tonamel">Tonamel<span class="n" id="n-tonamel"></span></button>' +
+'<button class="tab" id="tab-x" data-p="x">X<span class="n" id="n-x"></span></button>' +
+'</nav>' +
+'<div id="pane-tonamel">' +
 '<div class="bar" id="bar" style="display:none">' +
 '<span id="sws" class="sws"></span>' +
 '<input id="q" type="text" placeholder="Search titles&#8230;" autocomplete="off">' +
@@ -975,6 +1272,16 @@ const EVENTS_HTML =
 '<span class="dl sortable" data-k="deadline">Entry &#x3006;</span></div>' +
 '<div id="root"></div><div id="oldwrap"></div>' +
 '</div></div>' +
+'</div>' +
+'<div id="pane-x" hidden>' +
+'<div class="bar" id="xbar" style="display:none">' +
+'<span id="xsws" class="sws"></span>' +
+'<input id="xq" type="text" placeholder="Search posts&#8230;" autocomplete="off">' +
+'<label style="font-size:12px;color:var(--grey-600);display:flex;align-items:center;gap:4px">' +
+'<input type="checkbox" id="xonlyMatch" checked>matches only</label></div>' +
+'<p id="xstatus">Loading&#8230;</p>' +
+'<div id="xroot"></div>' +
+'</div>' +
 '<div id="dock"><div id="dockbar">' +
 '<button id="toggle">&#9881; Filters</button><span id="rulesum" class="hint"></span>' +
 '</div><div id="panel">' +
@@ -986,25 +1293,46 @@ const EVENTS_HTML =
 '<p class="hint">Comma-separate keywords. Ignore always wins over rules.</p>' +
 '<div class="frow"><button id="save" class="primary">Save filters</button>' +
 '<span id="savemsg" class="hint"></span></div>' +
+'</div>' +
+'<div id="xpanel">' +
+'<div class="flabel">Watching</div>' +
+'<div class="frow"><input id="xacc" type="text" placeholder="BEEEEF999"></div>' +
+'<p class="hint">Comma-separate X handles without the @. Up to 5.</p>' +
+'<div class="flabel">Alert rules &#8212; each gets its own highlight colour</div>' +
+'<div id="xrules"></div>' +
+'<div class="frow"><button id="xaddrule">+ Add rule</button></div>' +
+'<div class="flabel">Ignore if post contains</div>' +
+'<div class="frow"><input id="xexcl" type="text" placeholder="RT, 抽選結果"></div>' +
+'<p class="hint">Only matching posts are pushed to LINE. Keep these tight &#8212; ' +
+'the free LINE plan allows 200 pushes a month across both tabs.</p>' +
+'<div class="frow"><button id="xsave" class="primary">Save X filters</button>' +
+'<span id="xsavemsg" class="hint"></span></div>' +
 '</div></div><script>' +
 'var MARKS={},ITEMS=[],CFG={rules:[],exclude:[]};' +
+'var POSTS=[],XCFG={rules:[],exclude:[],accounts:[]},XREADY=false;' +
+'var TAB="tonamel";try{TAB=localStorage.getItem("mewtab")||"tonamel"}catch(_e){}' +
+'if(location.hash==="#x")TAB="x";if(location.hash==="#tonamel")TAB="tonamel";' +
 'var PIN="";try{PIN=localStorage.getItem("mewpin")||""}catch(_e){}' +
 'function wfetch(u,o){var sep=u.indexOf("?")===-1?"?":"&";' +
 'var go=function(){return fetch(u+sep+"pin="+encodeURIComponent(PIN),o)};' +
 'return go().then(function(r){if(r.status!==401)return r;' +
 'var p=prompt("Board PIN:");if(p==null)return r;' +
 'PIN=p;try{localStorage.setItem("mewpin",p)}catch(_e){}return go()})}' +
-'var RULEOFF={};' +
-'try{(JSON.parse(localStorage.getItem("mewruleoff"))||[]).forEach(function(k){RULEOFF[k]=1})}catch(_e){}' +
-'function saveRuleOff(){try{localStorage.setItem("mewruleoff",' +
-'JSON.stringify(Object.keys(RULEOFF).filter(function(k){return RULEOFF[k]})))}catch(_e){}}' +
-'function buildSwatches(){var host=document.getElementById("sws");host.innerHTML="";' +
-'(CFG.rules||[]).forEach(function(r){var b=document.createElement("button");b.className="sw";' +
-'function paint(){var off=!!RULEOFF[r.label];b.style.borderColor=r.color;' +
-'b.style.background=off?"transparent":r.color;b.classList.toggle("off",off);' +
-'b.title=r.label+(off?" \\u2014 hidden":"")}' +
-'paint();b.onclick=function(){RULEOFF[r.label]=!RULEOFF[r.label];saveRuleOff();paint();render()};' +
+'function loadOff(key){var o={};try{(JSON.parse(localStorage.getItem(key))||[])' +
+'.forEach(function(k){o[k]=1})}catch(_e){}return o}' +
+'function saveOff(key,off){try{localStorage.setItem(key,' +
+'JSON.stringify(Object.keys(off).filter(function(k){return off[k]})))}catch(_e){}}' +
+'var RULEOFF=loadOff("mewruleoff"),XRULEOFF=loadOff("mewxruleoff");' +
+'function buildSw(hostId,cfg,off,key,rerender){var host=document.getElementById(hostId);' +
+'host.innerHTML="";(cfg.rules||[]).forEach(function(r){' +
+'var b=document.createElement("button");b.className="sw";' +
+'function paint(){var o=!!off[r.label];b.style.borderColor=r.color;' +
+'b.style.background=o?"transparent":r.color;b.classList.toggle("off",o);' +
+'b.title=r.label+(o?" \\u2014 hidden":"")}' +
+'paint();b.onclick=function(){off[r.label]=!off[r.label];saveOff(key,off);paint();rerender()};' +
 'host.appendChild(b)})}' +
+'function buildSwatches(){buildSw("sws",CFG,RULEOFF,"mewruleoff",render);' +
+'buildSw("xsws",XCFG,XRULEOFF,"mewxruleoff",xrender)}' +
 'var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];' +
 'var SORT;try{SORT=JSON.parse(localStorage.getItem("mewsort"))||{k:"when",dir:1}}catch(_e){SORT={k:"when",dir:1}}' +
 'function mk(tag,cls,txt){var el=document.createElement(tag);if(cls)el.className=cls;if(txt!=null)el.textContent=txt;return el}' +
@@ -1027,9 +1355,9 @@ const EVENTS_HTML =
 'function buildHues(names){var ks=names.slice().sort();HUES={};' +
 'ks.forEach(function(n,i){HUES[n]=Math.round(i*360/Math.max(ks.length,1)+200)%360})}' +
 'function storeHue(n){return HUES[n]!=null?HUES[n]:330}' +
-'function ruleFor(title){var t=String(title||"").toLowerCase();if(!t)return null;' +
-'for(var i=0;i<(CFG.exclude||[]).length;i++){if(t.indexOf(String(CFG.exclude[i]).toLowerCase())!==-1)return null}' +
-'for(var j=0;j<(CFG.rules||[]).length;j++){var r=CFG.rules[j];' +
+'function ruleFor(title,cfg){cfg=cfg||CFG;var t=String(title||"").toLowerCase();if(!t)return null;' +
+'for(var i=0;i<(cfg.exclude||[]).length;i++){if(t.indexOf(String(cfg.exclude[i]).toLowerCase())!==-1)return null}' +
+'for(var j=0;j<(cfg.rules||[]).length;j++){var r=cfg.rules[j];' +
 'for(var k=0;k<(r.include||[]).length;k++){if(t.indexOf(String(r.include[k]).toLowerCase())!==-1)return r}}' +
 'return null}' +
 'function tint(hex){return hex+"14"}' +
@@ -1120,8 +1448,45 @@ const EVENTS_HTML =
 'h.classList.toggle("on",on)}' +
 'document.getElementById("status").textContent=(recent.length||old.length)?"":' +
 '(ITEMS.length?"Nothing matches your filter.":"No events yet \\u2014 they appear as the poller runs.");' +
+'document.getElementById("n-tonamel").textContent=recent.length?String(recent.length):"";' +
+'updateSum()}' +
+/* ---- X tab ---- */
+'function cleanText(s){return String(s||"").replace(/https:\\/\\/t\\.co\\/\\S+/g,"").trim()}' +
+'function fmtStamp(ts){if(!ts)return "\\u2014";var d=new Date(ts);' +
+'return (d.getMonth()+1)+"/"+d.getDate()+" "+("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2)}' +
+'function prow(p){var r=mk("div","prow"+(isToday(p.ts)?" new":""));' +
+'if(p.rule){r.style.borderLeftColor=p.rule.color;r.style.background=tint(p.rule.color)}' +
+'r.appendChild(mk("span","pt",fmtStamp(p.ts)));' +
+'var b=mk("div","pb");var a=document.createElement("a");a.className="ptx";a.href=p.url;' +
+'a.target="_blank";a.rel="noopener";a.textContent=cleanText(p.text);b.appendChild(a);' +
+'b.appendChild(mk("span","phandle","@"+p.handle));r.appendChild(b);return r}' +
+'function xrender(){' +
+'POSTS.forEach(function(p){p.rule=ruleFor(p.text,XCFG)});' +
+'var q=(document.getElementById("xq").value||"").toLowerCase();' +
+'var om=document.getElementById("xonlyMatch").checked;' +
+'var list=POSTS.filter(function(p){' +
+'if(p.rule&&XRULEOFF[p.rule.label])return false;' +
+'if(om&&!p.rule)return false;' +
+'if(q&&cleanText(p.text).toLowerCase().indexOf(q)===-1)return false;return true});' +
+'var root=document.getElementById("xroot");root.innerHTML="";' +
+'list.forEach(function(p){root.appendChild(prow(p))});' +
+'document.getElementById("n-x").textContent=list.length?String(list.length):"";' +
+'document.getElementById("xstatus").textContent=list.length?"":' +
+'(!XREADY?"X is not connected yet \\u2014 add the X_BEARER_TOKEN secret in Cloudflare.":' +
+'(POSTS.length?"Nothing matches your filter.":' +
+'"No posts yet \\u2014 they appear as the watcher runs."));' +
+'updateSum()}' +
+'function updateSum(){var c=(TAB==="x")?XCFG:CFG;' +
 'document.getElementById("rulesum").textContent=' +
-'(CFG.rules||[]).map(function(r){return r.label}).join(" \\u00b7 ")||"no rules \\u2014 everything matches"}' +
+'(c.rules||[]).map(function(r){return r.label}).join(" \\u00b7 ")||"no rules \\u2014 everything matches"}' +
+'function setTab(t){TAB=t;try{localStorage.setItem("mewtab",t)}catch(_e){}' +
+'document.getElementById("pane-tonamel").hidden=(t!=="tonamel");' +
+'document.getElementById("pane-x").hidden=(t!=="x");' +
+'document.getElementById("tab-tonamel").classList.toggle("on",t==="tonamel");' +
+'document.getElementById("tab-x").classList.toggle("on",t==="x");' +
+'document.getElementById("panel").classList.remove("open");' +
+'document.getElementById("xpanel").classList.remove("open");' +
+'if(t==="x")xrender();else render()}' +
 /* ---- filter drawer ---- */
 'function ruleRow(r){var d=mk("div","frow");' +
 'var kw=document.createElement("input");kw.type="text";kw.value=(r.include||[]).join(", ");' +
@@ -1135,8 +1500,32 @@ const EVENTS_HTML =
 '(CFG.rules||[]).forEach(function(r){host.appendChild(ruleRow(r))});' +
 'if(!(CFG.rules||[]).length)host.appendChild(ruleRow({include:[],color:"#3b82f6"}));' +
 'document.getElementById("excl").value=(CFG.exclude||[]).join(", ")}' +
+'function fillXPanel(){var host=document.getElementById("xrules");host.innerHTML="";' +
+'(XCFG.rules||[]).forEach(function(r){host.appendChild(ruleRow(r))});' +
+'if(!(XCFG.rules||[]).length)host.appendChild(ruleRow({include:[],color:"#1D9BF0"}));' +
+'document.getElementById("xexcl").value=(XCFG.exclude||[]).join(", ");' +
+'document.getElementById("xacc").value=(XCFG.accounts||[]).join(", ")}' +
+/* the drawer serves whichever tab is showing */
 'document.getElementById("toggle").onclick=function(){' +
-'document.getElementById("panel").classList.toggle("open")};' +
+'document.getElementById(TAB==="x"?"xpanel":"panel").classList.toggle("open")};' +
+'document.getElementById("tab-tonamel").onclick=function(){setTab("tonamel")};' +
+'document.getElementById("tab-x").onclick=function(){setTab("x")};' +
+'document.getElementById("xaddrule").onclick=function(){' +
+'document.getElementById("xrules").appendChild(ruleRow({include:[],color:"#1D9BF0"}))};' +
+'document.getElementById("xsave").onclick=function(){' +
+'var rules=[];Array.prototype.forEach.call(document.querySelectorAll("#xrules .frow"),function(d){' +
+'if(d._get){var v=d._get();if(v)rules.push(v)}});' +
+'var exclude=document.getElementById("xexcl").value.split(",").map(function(s){return s.trim()}).filter(Boolean);' +
+'var accounts=document.getElementById("xacc").value.split(",")' +
+'.map(function(s){return s.trim().replace("@","")}).filter(Boolean);' +
+'var msg=document.getElementById("xsavemsg");msg.textContent="Saving\\u2026";' +
+'wfetch("/x/config",{method:"POST",headers:{"content-type":"application/json"},' +
+'body:JSON.stringify({rules:rules,exclude:exclude,accounts:accounts})})' +
+'.then(function(r){return r.json()}).then(function(j){' +
+'if(j.ok){XCFG=j.config;msg.textContent="Saved \\u2713";buildSwatches();xrender();' +
+'setTimeout(function(){msg.textContent=""},2000)}' +
+'else msg.textContent="Error: "+(j.error||"failed")})' +
+'.catch(function(e){msg.textContent="Error: "+e.message})};' +
 'document.getElementById("addrule").onclick=function(){' +
 'document.getElementById("rules").appendChild(ruleRow({include:[],color:"#FF4D9D"}))};' +
 'document.getElementById("save").onclick=function(){' +
@@ -1153,6 +1542,9 @@ const EVENTS_HTML =
 /* ---- load ---- */
 'fetch("/events/data").then(function(r){return r.json()}).then(function(data){' +
 'MARKS=data.marks||{};CFG=data.config||{rules:[],exclude:[]};ITEMS=[];' +
+'XCFG=data.xconfig||{rules:[],exclude:[],accounts:[]};XREADY=!!data.xready;' +
+'POSTS=(data.posts||[]).map(function(p){' +
+'p.ts=Date.parse(p.createdAt)||Date.parse(p.firstSeen)||0;return p});' +
 '(data.custom||[]).forEach(function(e){var w=parseWhen(e.date);e.store="";e.custom=true;' +
 'e.nodate=(w==null);' +
 'e.when=(w!=null)?w:(Date.parse(e.addedAt)||Date.now());e.addedTs=Date.parse(e.addedAt)||0;' +
@@ -1168,15 +1560,20 @@ const EVENTS_HTML =
 'Object.keys(names).sort().forEach(function(n){sel.appendChild(new Option("  "+shortStore(n),n))});' +
 'sel.appendChild(new Option("\\ud83d\\udccc Pinned","__pinned__"));' +
 'buildSwatches();document.getElementById("bar").style.display="flex";' +
+'document.getElementById("xbar").style.display="flex";' +
 'if(ITEMS.length)document.getElementById("hdr").style.display="flex";' +
 'var om=document.getElementById("onlyMatch");' +
 'try{var sv=localStorage.getItem("mewonly");if(sv!==null)om.checked=(sv==="1")}catch(_e){}' +
 'document.getElementById("q").oninput=render;sel.onchange=render;' +
 'om.onchange=function(){try{localStorage.setItem("mewonly",om.checked?"1":"0")}catch(_e){}render()};' +
+'var xom=document.getElementById("xonlyMatch");' +
+'try{var xsv=localStorage.getItem("mewxonly");if(xsv!==null)xom.checked=(xsv==="1")}catch(_e){}' +
+'document.getElementById("xq").oninput=xrender;' +
+'xom.onchange=function(){try{localStorage.setItem("mewxonly",xom.checked?"1":"0")}catch(_e){}xrender()};' +
 'Array.prototype.forEach.call(document.querySelectorAll(".hdr .sortable"),function(h){h.onclick=function(){' +
 'var k=h.getAttribute("data-k");if(SORT.k===k)SORT.dir=-SORT.dir;else{SORT.k=k;SORT.dir=1}' +
 'try{localStorage.setItem("mewsort",JSON.stringify(SORT))}catch(_e){}render()}});' +
-'fillPanel();render()})' +
+'fillPanel();fillXPanel();render();xrender();setTab(TAB)})' +
 '.catch(function(e){document.getElementById("status").textContent="Failed to load: "+e.message});' +
 '</script></body></html>';
 

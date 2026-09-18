@@ -15,8 +15,19 @@ compatibility_date = "2025-01-01"
 binding = "MEW_STATE"
 id = "043a700a0872448c9d0e03c7cc016196"
 
+# Pulls new posts from the watched X accounts. Unlike Tonamel (which needs a
+# real browser and so runs from GitHub Actions), X is a plain authenticated
+# HTTPS call the Worker can make itself — and Cloudflare fires crons on time,
+# where GitHub deprioritises scheduled runs and drifts by hours.
+# Costs nothing when the account is quiet: reads are billed per post returned,
+# and since_id means a poll with no new posts returns none.
+[triggers]
+crons = ["*/5 * * * *"]
+
 # Secrets — do not put values here. Set with `npx wrangler secret put <NAME>`
 # or in the dashboard (Worker ▸ Settings ▸ Variables and Secrets):
 #   LINE_TOKEN           LINE Messaging API channel access token
 #   GROUP_ID             LINE group/user id to push to
 #   LINE_CHANNEL_SECRET  verifies /line webhook signatures (chat pinning)
+#   X_BEARER_TOKEN       X API v2 bearer token (the X tab; unset = tab idle)
+#   BOARD_PIN            optional — required to change marks, filters or pins
