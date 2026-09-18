@@ -199,8 +199,13 @@ reappears in a later capture would otherwise look new and churn the list.
 `GET /health` returns the last 50 decisions, newest first — `Baseline`,
 `No new`, `Sent 3: …`, or `LINE FAILED (429): …`. This is the first place to
 look when an alert didn't arrive. X decisions appear there too, under
-`@handle`. `GET /x/poll` runs the X watch immediately instead of waiting for
-the cron (PIN-gated when `BOARD_PIN` is set).
+`@handle`. Two endpoints help when something looks wrong (both PIN-gated when
+`BOARD_PIN` is set):
+
+- `GET /x/poll` runs the X watch immediately instead of waiting for the cron.
+- `GET /line/test` pushes a test message, to separate "LINE is broken" from
+  "nothing matched yet". It spends real quota — and a group push costs one
+  message per member — so it is capped at 8/day with a 60-second cooldown.
 
 ## Custom domain
 

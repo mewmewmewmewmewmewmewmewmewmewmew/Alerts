@@ -44,6 +44,11 @@ const X_PENDING_PREFIX = "x::pending::"; // matched posts awaiting a LINE push
 const POST_CAP = 600;   // posts kept per handle for the board
 const X_MAX_RESULTS = 20; // per poll; reads are billed per post returned
 
+// /line/test budget — test pushes spend the same quota as real alerts.
+const LINE_TEST_KEY = "line::test::budget";
+const LINE_TEST_COOLDOWN_MS = 60000;
+const LINE_TEST_DAILY_CAP = 8;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -59,6 +64,12 @@ export default {
     if (url.pathname === "/x/poll") {
       if (!pinOk(request, env, url)) return json({ error: "pin" }, 401);
       return json(await pollX(env));
+    }
+    // Push a test message, to prove the LINE half works without waiting for a
+    // real alert. Costs quota, so it is budgeted (see handleLineTest).
+    if (url.pathname === "/line/test") {
+      if (!pinOk(request, env, url)) return json({ error: "pin" }, 401);
+      return handleLineTest(env);
     }
     // Public event board + its data / management endpoints.
     if (url.pathname === "/events") return html(EVENTS_HTML);
@@ -756,6 +767,50 @@ function buildXMessage(handle, posts) {
     return t.slice(0, 220) + "\n" + p.url;
   }).join("\n\n");
   return head + "\n\n" + body;
+}
+
+/**
+ * Send one test push, so you can confirm LINE works without waiting for a real
+ * alert. Every test spends real quota — and on a group, one push costs one
+ * message per member — so it is budgeted: a short cooldown plus a daily cap.
+ * With BOARD_PIN set the endpoint is gated anyway; the budget is what stops a
+ * stranger draining the month's allowance when it isn't.
+ */
+async function handleLineTest(env) {
+  const now = Date.now();
+  const today = new Date(now).toISOString().slice(0, 10);
+  let budget = { day: today, n: 0, last: 0 };
+  try {
+    const raw = JSON.parse((await env.MEW_STATE.get(LINE_TEST_KEY)) || "null");
+    if (raw && raw.day === today) budget = raw;
+  } catch (e) { /* fall through to a fresh budget */ }
+
+  if (now - (budget.last || 0) < LINE_TEST_COOLDOWN_MS) {
+    const wait = Math.ceil((LINE_TEST_COOLDOWN_MS - (now - budget.last)) / 1000);
+    return json({ ok: false, reason: "cooldown", retryInSeconds: wait }, 429);
+  }
+  if (budget.n >= LINE_TEST_DAILY_CAP) {
+    return json({ ok: false, reason: "daily cap", cap: LINE_TEST_DAILY_CAP }, 429);
+  }
+
+  const stamp = new Date(now).toISOString().replace("T", " ").slice(0, 16);
+  const send = await sendToLine(env,
+    "\u{1F431} ポケカ Events — test alert\n" + stamp + " UTC\n\n" +
+    "If you can read this, pushes are working and you have quota left.");
+
+  budget = { day: today, n: budget.n + 1, last: now };
+  await env.MEW_STATE.put(LINE_TEST_KEY, JSON.stringify(budget));
+  await logDecision(env, "line-test", send.ok
+    ? "Test push OK (" + budget.n + "/" + LINE_TEST_DAILY_CAP + " today)"
+    : "Test push FAILED (" + send.status + "): " + send.detail);
+
+  return json({
+    ok: send.ok,
+    status: send.status,
+    detail: send.ok ? "" : send.detail,
+    testsUsedToday: budget.n,
+    dailyCap: LINE_TEST_DAILY_CAP,
+  }, send.ok ? 200 : 502);
 }
 
 /** GET returns the effective X filter; POST saves a new one to KV. */
