@@ -89,6 +89,10 @@ uses `since_id`, so a quiet account returns no posts and costs nothing; a busy
 one at ~15 posts/day is roughly **$2/month**. Retweets and replies are excluded
 at the API so you are never billed for them.
 
+Each alert leads with the **post's own time in JST**, so a queued or delayed
+push can't be mistaken for a fresh drop — if it says 20:07 and it's 20:40, the
+box is long gone.
+
 One-time setup: create an X developer app, then add its bearer token as the
 `X_BEARER_TOKEN` secret in Cloudflare. Until that exists the tab says so and the
 cron does nothing. The first poll is a **baseline** — it records where the

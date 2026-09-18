@@ -760,11 +760,26 @@ function firstLine(s) {
   return String(s || "").split("\n")[0].trim().slice(0, 60);
 }
 
+/**
+ * Post time in JST. The Worker runs in UTC, so shift then read UTC fields —
+ * the alert is for a Japanese restock and "how old is this" decides whether
+ * it is still worth acting on, so this is the first thing in each entry.
+ */
+function jstStamp(iso) {
+  const t = Date.parse(iso);
+  if (!isFinite(t)) return "";
+  const d = new Date(t + 9 * 3600000);
+  const pad = (n) => (n < 10 ? "0" + n : String(n));
+  return (d.getUTCMonth() + 1) + "/" + d.getUTCDate() + " " +
+    pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes());
+}
+
 function buildXMessage(handle, posts) {
   const head = posts.length === 1 ? "\u{1F426} @" + handle : "\u{1F426} @" + handle + " ×" + posts.length;
   const body = posts.map((p) => {
     const t = String(p.text || "").replace(/https:\/\/t\.co\/\S+/g, "").trim();
-    return t.slice(0, 220) + "\n" + p.url;
+    const stamp = jstStamp(p.createdAt);
+    return (stamp ? stamp + "\n" : "") + t.slice(0, 220) + "\n" + p.url;
   }).join("\n\n");
   return head + "\n\n" + body;
 }
