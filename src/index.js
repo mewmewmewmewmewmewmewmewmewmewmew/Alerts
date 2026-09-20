@@ -554,6 +554,11 @@ function normalizeConfig(c) {
   const rawExclude =
     Array.isArray(c.exclude) && c.exclude.length ? c.exclude : c.default && c.default.exclude;
   out.exclude = strArr(rawExclude);
+  // Narrowing gate: when set, a title must contain one of these *as well as*
+  // matching a rule. Any one of them satisfies it — it's OR within the list,
+  // AND against the rules — which is what "only my area" needs when the area
+  // has several names. Empty means no constraint.
+  out.require = strArr(c.require);
   const mc = c.minChars != null ? c.minChars : c.default && c.default.minChars;
   out.minChars = typeof mc === "number" && isFinite(mc) ? Math.max(0, Math.floor(mc)) : 1;
   return out;
@@ -848,11 +853,17 @@ async function handleXConfig(request, env) {
   }
 }
 
-/** First rule whose keywords appear in the title, or null. Excludes win. */
+/**
+ * First rule whose keywords appear in the title, or null.
+ * Excludes win over everything; `require` (when set) must also be satisfied
+ * before any rule is considered.
+ */
 function matchRule(title, cfg) {
   const t = lc(title);
   if (!t) return null;
   if ((cfg.exclude || []).some((k) => t.includes(lc(k)))) return null;
+  const req = cfg.require || [];
+  if (req.length && !req.some((k) => t.includes(lc(k)))) return null;
   for (const r of cfg.rules || []) {
     if (r.include.some((k) => t.includes(lc(k)))) return r;
   }
@@ -1368,6 +1379,11 @@ const EVENTS_HTML =
 '<div class="flabel">Watching</div>' +
 '<div class="frow"><input id="xacc" type="text" placeholder="BEEEEF999"></div>' +
 '<p class="hint">Comma-separate X handles without the @. Up to 5.</p>' +
+'<div class="flabel">Must also contain</div>' +
+'<div class="frow"><input id="xreq" type="text" placeholder="秋葉原"></div>' +
+'<p class="hint">Narrows everything below. A post must contain <b>one of these</b> ' +
+'<b>and</b> match a rule. Comma-separate to allow several &#8212; e.g. ' +
+'<code>秋葉原, 池袋</code>. Leave empty for no restriction.</p>' +
 '<div class="flabel">Alert rules &#8212; each gets its own highlight colour</div>' +
 '<div id="xrules"></div>' +
 '<div class="frow"><button id="xaddrule">+ Add rule</button></div>' +
@@ -1427,6 +1443,9 @@ const EVENTS_HTML =
 'function storeHue(n){return HUES[n]!=null?HUES[n]:330}' +
 'function ruleFor(title,cfg){cfg=cfg||CFG;var t=String(title||"").toLowerCase();if(!t)return null;' +
 'for(var i=0;i<(cfg.exclude||[]).length;i++){if(t.indexOf(String(cfg.exclude[i]).toLowerCase())!==-1)return null}' +
+'var rq=cfg.require||[];if(rq.length){var hit=false;' +
+'for(var n=0;n<rq.length;n++){if(t.indexOf(String(rq[n]).toLowerCase())!==-1){hit=true;break}}' +
+'if(!hit)return null}' +
 'for(var j=0;j<(cfg.rules||[]).length;j++){var r=cfg.rules[j];' +
 'for(var k=0;k<(r.include||[]).length;k++){if(t.indexOf(String(r.include[k]).toLowerCase())!==-1)return r}}' +
 'return null}' +
@@ -1547,8 +1566,11 @@ const EVENTS_HTML =
 '"No posts yet \\u2014 they appear as the watcher runs."));' +
 'updateSum()}' +
 'function updateSum(){var c=(TAB==="x")?XCFG:CFG;' +
+'var names=(c.rules||[]).map(function(r){return r.label}).join(" \\u00b7 ")||' +
+'"no rules \\u2014 everything matches";' +
+'var rq=(c.require||[]);' +
 'document.getElementById("rulesum").textContent=' +
-'(c.rules||[]).map(function(r){return r.label}).join(" \\u00b7 ")||"no rules \\u2014 everything matches"}' +
+'rq.length?(rq.join("/")+" + ("+names+")"):names}' +
 'function setTab(t){TAB=t;try{localStorage.setItem("mewtab",t)}catch(_e){}' +
 'document.getElementById("pane-tonamel").hidden=(t!=="tonamel");' +
 'document.getElementById("pane-x").hidden=(t!=="x");' +
@@ -1574,6 +1596,7 @@ const EVENTS_HTML =
 '(XCFG.rules||[]).forEach(function(r){host.appendChild(ruleRow(r))});' +
 'if(!(XCFG.rules||[]).length)host.appendChild(ruleRow({include:[],color:"#1D9BF0"}));' +
 'document.getElementById("xexcl").value=(XCFG.exclude||[]).join(", ");' +
+'document.getElementById("xreq").value=(XCFG.require||[]).join(", ");' +
 'document.getElementById("xacc").value=(XCFG.accounts||[]).join(", ")}' +
 /* the drawer serves whichever tab is showing */
 'document.getElementById("toggle").onclick=function(){' +
@@ -1586,11 +1609,12 @@ const EVENTS_HTML =
 'var rules=[];Array.prototype.forEach.call(document.querySelectorAll("#xrules .frow"),function(d){' +
 'if(d._get){var v=d._get();if(v)rules.push(v)}});' +
 'var exclude=document.getElementById("xexcl").value.split(",").map(function(s){return s.trim()}).filter(Boolean);' +
+'var require=document.getElementById("xreq").value.split(",").map(function(s){return s.trim()}).filter(Boolean);' +
 'var accounts=document.getElementById("xacc").value.split(",")' +
 '.map(function(s){return s.trim().replace("@","")}).filter(Boolean);' +
 'var msg=document.getElementById("xsavemsg");msg.textContent="Saving\\u2026";' +
 'wfetch("/x/config",{method:"POST",headers:{"content-type":"application/json"},' +
-'body:JSON.stringify({rules:rules,exclude:exclude,accounts:accounts})})' +
+'body:JSON.stringify({rules:rules,exclude:exclude,require:require,accounts:accounts})})' +
 '.then(function(r){return r.json()}).then(function(j){' +
 'if(j.ok){XCFG=j.config;msg.textContent="Saved \\u2713";buildSwatches();xrender();' +
 'setTimeout(function(){msg.textContent=""},2000)}' +

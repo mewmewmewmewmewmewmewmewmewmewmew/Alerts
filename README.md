@@ -78,6 +78,20 @@ whichever rule they match — the same mechanism as the event rules, with its ow
 separate keyword set. Click **⚙ Filters** while the X tab is open to edit the
 handles and rules; the drawer follows whichever tab you are on.
 
+**Must also contain** is a narrowing gate across the whole tab: when set, a
+post has to contain one of its keywords *and* match a rule. Use it to pin the
+feed to your area — `秋葉原` keeps the 抽選/先着 rules but drops every other
+branch. Comma-separate to allow several (`秋葉原, 池袋`); any one satisfies it.
+Leave it empty and nothing is restricted. Ignore keywords still win over
+everything.
+
+```
+           require            rules              result
+   秋葉原ヨドバシ 抽選販売      ✓  秋葉原          ✓  抽選     →  alert
+   千葉ヨドバシ 抽選販売        ✗                ✓  抽選     →  no alert
+   秋葉原ヨドバシ 通常入荷      ✓  秋葉原          ✗          →  no alert
+```
+
 **Only matching posts are pushed to LINE.** That is the point of the filter
 here: a busy restock account can out-post the free LINE quota on its own (200
 pushes/month, shared with the event alerts), so keep the rules tight. Everything
@@ -126,6 +140,7 @@ each with its own highlight colour:
 | ----- | ------- |
 | keywords | comma-separated; a title containing any of them matches this rule |
 | colour | row tint + left border for events matching this rule |
+| Must also contain | global AND gate (X tab) — a post needs one of these *as well as* a rule |
 | Ignore if title contains | global — always wins over every rule |
 
 An event alerts if it matches **any** rule and no ignore keyword. Saving writes
@@ -153,6 +168,7 @@ Committed defaults live in `config.json`:
       { "label": "抽選", "include": ["抽選"], "color": "#1D9BF0" },
       { "label": "先着", "include": ["先着"], "color": "#FF4D9D" }
     ],
+    "require": ["秋葉原"],
     "exclude": ["抽選結果", "当選発表"]
   }
 }

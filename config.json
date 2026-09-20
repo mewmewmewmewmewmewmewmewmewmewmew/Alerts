@@ -19,6 +19,7 @@
       { "label": "抽選", "include": ["抽選"], "color": "#1D9BF0" },
       { "label": "先着", "include": ["先着"], "color": "#FF4D9D" }
     ],
+    "require": ["秋葉原"],
     "exclude": ["抽選結果", "当選発表"]
   }
 }
