@@ -254,6 +254,12 @@ Git). Secrets live in **Worker → Settings → Variables and Secrets**:
 
 The poller needs one repo secret, `WEBHOOK_URL`, pointing at the Worker.
 
+When `BOARD_PIN` is set, the first save of a session returns 401 and the board
+reveals a **PIN field above the filter drawer**; enter it once and it is
+remembered in that browser. Reads are never gated, so the board still loads
+for anyone. `GET /events/pin?pin=…` is the check behind that field — it
+validates and changes nothing.
+
 **`BOARD_PIN` matters on a public repo.** The Worker URL appears in the commit
 history, so anyone who finds it could otherwise edit your filters (which drive
 the LINE alerts) or delete pinned links. With the secret set, reads stay open

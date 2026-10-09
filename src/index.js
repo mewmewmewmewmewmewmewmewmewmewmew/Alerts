@@ -59,6 +59,11 @@ export default {
       return json({ recent });
     }
     if (url.pathname === "/events/config") return handleEventsConfig(request, env);
+    // Cheap gated no-op, so the board can check a PIN without changing anything.
+    if (url.pathname === "/events/pin") {
+      if (!pinOk(request, env, url)) return json({ error: "pin" }, 401);
+      return json({ ok: true, required: !!env.BOARD_PIN });
+    }
     if (url.pathname === "/x/config") return handleXConfig(request, env);
     // Pull X now instead of waiting for the cron — used by the board's refresh.
     if (url.pathname === "/x/poll") {
@@ -1296,6 +1301,11 @@ const EVENTS_HTML =
 '#panel,#xpanel{max-width:720px;margin:0 auto;padding:0 16px 14px;display:none;' +
 'max-height:56vh;overflow:auto}' +
 '#panel.open,#xpanel.open{display:block}' +
+'#pinrow{max-width:720px;margin:0 auto;padding:0 16px 12px;align-items:center;gap:8px}' +
+'#pinrow input{font-family:var(--font-body);font-size:12px;padding:6px 8px;width:130px;' +
+'border:1px solid var(--grey-300);border-radius:2px;color:var(--ink);background:var(--white)}' +
+'#pinrow button{font-family:var(--font-body);font-size:12px;border:1px solid var(--pink-700);' +
+'background:var(--pink-700);color:#fff;border-radius:2px;padding:6px 12px;cursor:pointer}' +
 '.frow{display:flex;align-items:center;gap:8px;margin:8px 0}' +
 '.frow input[type=text]{flex:1;min-width:0;font-family:var(--font-body);font-size:12px;padding:6px 8px;' +
 'border:1px solid var(--grey-300);border-radius:2px;color:var(--ink);background:var(--white)}' +
@@ -1365,6 +1375,10 @@ const EVENTS_HTML =
 '</div>' +
 '<div id="dock"><div id="dockbar">' +
 '<button id="toggle">&#9881; Filters</button><span id="rulesum" class="hint"></span>' +
+'</div><div id="pinrow" style="display:none">' +
+'<input id="pinin" type="password" placeholder="Board PIN" autocomplete="current-password">' +
+'<button id="pinsave" class="primary">Unlock</button>' +
+'<span id="pinmsg" class="hint"></span>' +
 '</div><div id="panel">' +
 '<div class="flabel">Alert rules &#8212; each gets its own highlight colour</div>' +
 '<div id="rules"></div>' +
@@ -1399,11 +1413,17 @@ const EVENTS_HTML =
 'var TAB="tonamel";try{TAB=localStorage.getItem("mewtab")||"tonamel"}catch(_e){}' +
 'if(location.hash==="#x")TAB="x";if(location.hash==="#tonamel")TAB="tonamel";' +
 'var PIN="";try{PIN=localStorage.getItem("mewpin")||""}catch(_e){}' +
+/* A 401 reveals an inline PIN field. This used to call prompt() from inside
+   the response handler, which mobile browsers suppress — by then the click
+   that started the request no longer counts as user activation, so the dialog
+   never appeared and every save just looked broken. */
+'function needPin(msg){var row=document.getElementById("pinrow");' +
+'row.style.display="flex";document.getElementById("pinmsg").textContent=msg||"";' +
+'try{document.getElementById("pinin").focus()}catch(_e){}}' +
 'function wfetch(u,o){var sep=u.indexOf("?")===-1?"?":"&";' +
-'var go=function(){return fetch(u+sep+"pin="+encodeURIComponent(PIN),o)};' +
-'return go().then(function(r){if(r.status!==401)return r;' +
-'var p=prompt("Board PIN:");if(p==null)return r;' +
-'PIN=p;try{localStorage.setItem("mewpin",p)}catch(_e){}return go()})}' +
+'return fetch(u+sep+"pin="+encodeURIComponent(PIN),o).then(function(r){' +
+'if(r.status===401)needPin(PIN?"That PIN was rejected \\u2014 try again.":' +
+'"This board needs a PIN before it can save.");return r})}' +
 'function loadOff(key){var o={};try{(JSON.parse(localStorage.getItem(key))||[])' +
 '.forEach(function(k){o[k]=1})}catch(_e){}return o}' +
 'function saveOff(key,off){try{localStorage.setItem(key,' +
@@ -1463,7 +1483,8 @@ const EVENTS_HTML =
 'paint(cur);' +
 'b.onclick=function(){var prev=cur;cur=CYCLE[(CYCLE.indexOf(cur)+1)%CYCLE.length];paint(cur);' +
 'var v=cur;wfetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+v)' +
-'.then(function(r){if(!r.ok){cur=prev;paint(prev);alert("save failed")}' +
+'.then(function(r){if(!r.ok){cur=prev;paint(prev);' +
+'if(r.status!==401)alert("save failed")}' +
 'else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
 '.catch(function(){cur=prev;paint(prev);alert("save failed")})};' +
 'return b}' +
@@ -1601,6 +1622,17 @@ const EVENTS_HTML =
 /* the drawer serves whichever tab is showing */
 'document.getElementById("toggle").onclick=function(){' +
 'document.getElementById(TAB==="x"?"xpanel":"panel").classList.toggle("open")};' +
+'document.getElementById("pinsave").onclick=function(){' +
+'var v=document.getElementById("pinin").value.trim();if(!v)return;' +
+'var msg=document.getElementById("pinmsg");msg.textContent="Checking\\u2026";' +
+'fetch("/events/pin?pin="+encodeURIComponent(v)).then(function(r){' +
+'if(r.status===401){msg.textContent="Wrong PIN.";return}' +
+'if(!r.ok){msg.textContent="Error "+r.status;return}' +
+'PIN=v;try{localStorage.setItem("mewpin",v)}catch(_e){}' +
+'msg.textContent="Unlocked \\u2713";document.getElementById("pinin").value="";' +
+'setTimeout(function(){document.getElementById("pinrow").style.display="none";' +
+'msg.textContent=""},1200)})' +
+'.catch(function(e){msg.textContent="Error: "+e.message})};' +
 'document.getElementById("tab-tonamel").onclick=function(){setTab("tonamel")};' +
 'document.getElementById("tab-x").onclick=function(){setTab("x")};' +
 'document.getElementById("xaddrule").onclick=function(){' +
