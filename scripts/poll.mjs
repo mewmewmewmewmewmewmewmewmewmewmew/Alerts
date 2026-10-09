@@ -270,20 +270,59 @@ const context = await browser.newContext({
 });
 const page = await context.newPage();
 
+const results = [];
 for (const store of stores) {
   console.log(`\n${store.name} (${store.org})`);
-  try {
-    const events = await fetchStore(page, store);
-    console.log(
-      `  captured ${events.length} events; ${events.filter((e) => e.date).length} with dates, ` +
-        `${events.filter((e) => e.deadline).length} with entry deadlines`
-    );
-    if (events.length) await post(store, events);
-    else console.log("  (nothing captured — skipping post)");
-  } catch (err) {
-    console.error(`  FAILED: ${err.message}`);
-    process.exitCode = 1;
+  let ok = false;
+  let captured = 0;
+  let lastErr = null;
+  // One retry. These failures are nearly always a slow page or a dropped
+  // response rather than a broken store, and a second attempt is free — we
+  // drive our own browser, so there is no API quota to burn.
+  for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+    try {
+      const events = await fetchStore(page, store);
+      captured = events.length;
+      console.log(
+        `  captured ${events.length} events; ${events.filter((e) => e.date).length} with dates, ` +
+          `${events.filter((e) => e.deadline).length} with entry deadlines`
+      );
+      if (events.length) await post(store, events);
+      else console.log("  (nothing captured — skipping post)");
+      ok = true;
+    } catch (err) {
+      lastErr = err;
+      console.error(`  attempt ${attempt} FAILED: ${err.message}`);
+      if (attempt < 2) {
+        console.log("  retrying in 5s…");
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    }
   }
+  results.push({ name: store.name, ok, captured, err: lastErr });
 }
 
 await browser.close();
+
+// Exit status reflects what the run actually achieved. One flaky store used to
+// fail the whole run even though the other four had already reached the Worker
+// — and a red run you can't act on just teaches you to ignore red runs. A
+// partial capture is a warning; only a total wipeout is a failure.
+const failed = results.filter((r) => !r.ok);
+const empty = results.filter((r) => r.ok && r.captured === 0);
+
+console.log(
+  `\n${results.length - failed.length}/${results.length} stores captured` +
+    (empty.length ? ` (${empty.length} returned nothing)` : "")
+);
+for (const r of failed) console.error(`  ${r.name}: ${r.err && r.err.message}`);
+
+if (failed.length === results.length) {
+  console.error("All stores failed — the Worker got nothing this run.");
+  process.exitCode = 1;
+} else if (failed.length || empty.length) {
+  const bits = [];
+  if (failed.length) bits.push(`${failed.length} failed: ${failed.map((r) => r.name).join(", ")}`);
+  if (empty.length) bits.push(`${empty.length} captured 0: ${empty.map((r) => r.name).join(", ")}`);
+  console.log(`::warning title=Partial capture::${bits.join("; ")}`);
+}

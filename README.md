@@ -59,6 +59,14 @@ callers**, so `poll.mjs` drives a real Chromium and tries, in order:
 
 Each run logs which path it used, plus how many events had dates and deadlines.
 
+Each store gets **one retry** before it counts as failed — these are usually a
+slow page or a dropped response, and a second attempt costs nothing since we
+drive our own browser. The run then exits on what it actually achieved: green
+if any store captured, **red only if every store failed**. A partial capture
+raises a GitHub warning naming the stores (so does a store that returns zero
+events), because one flaky store failing the whole run just teaches you to
+ignore red runs.
+
 ## Adding a store
 
 Add an entry to `scripts/stores.json` and push:
