@@ -34,6 +34,10 @@ const STATE_PREFIX = "state::";
 const LINK_DELIM = " ||| "; // separates title and url in a linked capture
 const LINKED_PREFIX = "linked::";
 const DIAG_KEY = "diag::recent"; // ring buffer of recent webhook decisions
+// Repeats of an identical decision inside this window are not re-written.
+// KV gives 1,000 writes/day on the free plan; without this the idle X cron
+// spends a third of them restating "no new matches".
+const DIAG_REPEAT_MS = 30 * 60 * 1000;
 
 // ── X (Twitter) watch ───────────────────────────────────────────────────────
 const X_CONFIG_KEY = "config::x";
@@ -488,10 +492,24 @@ async function sendToLine(env, messageText) {
 }
 
 // ── Diagnostics: ring buffer of recent decisions, readable at /admin/health ──
+/**
+ * Append a decision to the /health ring buffer.
+ *
+ * KV allows 1,000 writes a day on the free plan, and the X cron alone fires
+ * 288 times — logging every idle poll burned a third of the allowance saying
+ * "nothing happened". Identical consecutive messages for the same source are
+ * therefore collapsed: the first is written, repeats inside the window are
+ * dropped. Reads are effectively free (100k/day), so the check costs nothing.
+ * The effect on /health is that an idle source's timestamp can be up to
+ * DIAG_REPEAT_MS old; anything that actually happened is written immediately,
+ * because its message differs.
+ */
 async function logDecision(env, name, msg) {
   try {
     let list = [];
     try { list = JSON.parse((await env.MEW_STATE.get(DIAG_KEY)) || "[]"); } catch (e) { list = []; }
+    const last = list.find((e) => e && e.name === name);
+    if (last && last.msg === msg && Date.now() - Date.parse(last.at) < DIAG_REPEAT_MS) return;
     list.unshift({ at: new Date().toISOString(), name: name, msg: msg });
     if (list.length > 50) list = list.slice(0, 50);
     await env.MEW_STATE.put(DIAG_KEY, JSON.stringify(list));
@@ -678,9 +696,13 @@ async function pollX(env) {
       // Advance the cursor even when nothing matches, so we never pay to read
       // the same posts twice. The API reports newest_id itself; fall back to
       // comparing ids (numeric strings: longer wins, else lexicographic).
+      // Only write when it actually moved — an idle poll rewriting the same
+      // value 288 times a day is most of the KV free-plan write allowance.
       const newest = (data.meta && data.meta.newest_id) ||
         posts.map((p) => p.id).reduce(maxId, since || "");
-      if (newest) await env.MEW_STATE.put(X_SINCE_PREFIX + handle, String(newest));
+      if (newest && String(newest) !== String(since || "")) {
+        await env.MEW_STATE.put(X_SINCE_PREFIX + handle, String(newest));
+      }
 
       const fresh = [];
       for (const p of posts) {
@@ -1075,11 +1097,21 @@ async function handleEventsMark(request, env, url) {
     await env.MEW_STATE.put(MARKS_KEY, JSON.stringify(marks));
     return json({ ok: true, url: target, marks: m });
   } catch (err) {
-    // Every mark lives under one KV key, and KV allows one write per second
-    // per key — so a burst of clicks can be rejected here. Answer with a
-    // retryable status and a reason instead of letting it become a bare 500.
-    console.log("mark write failed: " + err);
-    return json({ error: "write failed", detail: String((err && err.message) || err), retry: true }, 503);
+    // Two different write failures land here and they need different actions,
+    // so say which: KV allows one write per second per key (a click burst,
+    // retryable) and 1,000 writes per day on the free plan (exhausted, not
+    // retryable until it resets at UTC midnight).
+    const detail = String((err && err.message) || err);
+    const quota = /limit|quota|exceeded/i.test(detail) && !/rate/i.test(detail);
+    console.log("mark write failed: " + detail);
+    return json({
+      error: "write failed",
+      detail,
+      retry: !quota,
+      reason: quota
+        ? "KV daily write limit reached — resets at 00:00 UTC"
+        : "KV write collision — retryable",
+    }, 503);
   }
 }
 

@@ -226,6 +226,30 @@ past events are dropped, oldest **event date** first — ranking by event date
 rather than capture time keeps the choice stable, since a dropped event that
 reappears in a later capture would otherwise look new and churn the list.
 
+## The KV write budget
+
+The free plan allows **1,000 KV writes a day**, reset at 00:00 UTC, and that is
+the scarcest resource here — scarcer than storage, CPU or the X API. Exhausting
+it makes every write fail at once: checkmarks return 503, and the capture
+webhook answers non-200 so the Actions run goes red. If several things break
+together late in the UTC day, check this first.
+
+Current steady cost is about **140 writes/day**, leaving ~860 for marks and
+filter edits:
+
+| Source | Writes/day | Note |
+| ------ | ---------- | ---- |
+| X cron (idle) | ~48 | diag only; the cursor is written **only when it moves** |
+| Tonamel polls | ~70 | 5 stores × 2 keys × ~7 runs |
+| Tonamel diag | ~20 | identical consecutive decisions are collapsed |
+| A checkmark | 1 | coalesced, so cycling a cell is one write, not five |
+
+Two rules keep it there, and both matter: `logDecision` does not rewrite an
+identical message for the same source within 30 minutes, and the X cron does
+not rewrite `x::since::<handle>` when it hasn't changed. Before those, an idle
+day cost **681 writes** — 288 of them the X cron restating that nothing had
+happened — so ordinary use tipped it over the limit.
+
 ## Diagnostics (`/health`)
 
 `GET /health` returns the last 50 decisions, newest first — `Baseline`,
