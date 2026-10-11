@@ -127,6 +127,10 @@ a **Past events** section. Columns are sortable (click a header) and there's a
 search box and a store/category picker. On a narrow screen the table scrolls
 sideways rather than dropping columns — drag to reach Store, Spots and Entry 〆.
 
+- **K / R marks** are saved about half a second after you stop clicking, not on
+  every click — all marks share one KV key and KV accepts one write per second
+  per key, so cycling a cell five times would otherwise be rejected. A
+  collision retries itself once; only a second failure says anything.
 - **K / R marks** cycle through six states: empty (undecided) → pink ✓
   (entered) → blue ● (waiting list) → green ★ (won) → dark red ✕ (lost) → grey
   − (not entering). Stored server-side, so both of you see the same state from

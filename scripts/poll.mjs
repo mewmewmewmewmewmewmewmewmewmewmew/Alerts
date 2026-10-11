@@ -258,7 +258,11 @@ async function post(store, events) {
   });
   const reply = (await resp.text()).trim();
   console.log(`  → worker: HTTP ${resp.status} ${reply}`);
-  if (resp.status !== 200) process.exitCode = 1;
+  // Throw rather than setting process.exitCode here: this is one store's
+  // attempt failing, so it belongs to that store's retry-and-tally in the loop
+  // below. Setting the exit code directly bypassed that accounting entirely
+  // and reddened the whole run on a single bad reply.
+  if (resp.status !== 200) throw new Error(`worker replied HTTP ${resp.status}: ${reply.slice(0, 120)}`);
 }
 
 const browser = await chromium.launch();

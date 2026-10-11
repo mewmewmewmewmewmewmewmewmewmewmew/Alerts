@@ -1060,19 +1060,27 @@ async function handleEventsMark(request, env, url) {
   const val = markState(url.searchParams.get("val"));
   if (!target || (who !== "K" && who !== "R")) return json({ error: "bad params" }, 400);
 
-  let marks = {};
-  try { marks = JSON.parse((await env.MEW_STATE.get(MARKS_KEY)) || "{}"); } catch (e) { marks = {}; }
-  marks = normalizeMarks(marks);
-  const m = marks[target] || {};
-  if (val) m[who] = val; else delete m[who];
-  if (Object.keys(m).length) marks[target] = m; else delete marks[target];
+  try {
+    let marks = {};
+    try { marks = JSON.parse((await env.MEW_STATE.get(MARKS_KEY)) || "{}"); } catch (e) { marks = {}; }
+    marks = normalizeMarks(marks);
+    const m = marks[target] || {};
+    if (val) m[who] = val; else delete m[who];
+    if (Object.keys(m).length) marks[target] = m; else delete marks[target];
 
-  // Bound growth: drop oldest entries beyond 1000 urls.
-  const keys = Object.keys(marks);
-  if (keys.length > 1000) for (const k of keys.slice(0, keys.length - 1000)) delete marks[k];
+    // Bound growth: drop oldest entries beyond 1000 urls.
+    const keys = Object.keys(marks);
+    if (keys.length > 1000) for (const k of keys.slice(0, keys.length - 1000)) delete marks[k];
 
-  await env.MEW_STATE.put(MARKS_KEY, JSON.stringify(marks));
-  return json({ ok: true, url: target, marks: m });
+    await env.MEW_STATE.put(MARKS_KEY, JSON.stringify(marks));
+    return json({ ok: true, url: target, marks: m });
+  } catch (err) {
+    // Every mark lives under one KV key, and KV allows one write per second
+    // per key — so a burst of clicks can be rejected here. Answer with a
+    // retryable status and a reason instead of letting it become a bare 500.
+    console.log("mark write failed: " + err);
+    return json({ error: "write failed", detail: String((err && err.message) || err), retry: true }, 503);
+  }
 }
 
 /** GET returns the effective filter; POST saves a new one to KV. */
@@ -1476,17 +1484,35 @@ const EVENTS_HTML =
 'var WORD={x:"not entering",y:"entered",q:"waiting list",w:"won",l:"lost"};' +
 'function st(v){if(v===true||v==="y"||v==="1")return "y";' +
 'return (v==="x"||v==="q"||v==="w"||v==="l")?v:""}' +
+/* Mark writes all land on one KV key, which accepts one write per second, and
+   the cycle is six states — so tapping a cell up to five times used to fire
+   five writes in two seconds and get rejected. Coalesce per cell: paint
+   immediately, then send only the value you settled on, one request at a
+   time, retrying once if the Worker says it was a write collision. */
+'var MQ={},MCHAIN=Promise.resolve();' +
+'function markSave(u,who,v,onFail){var k=u+"\\u0000"+who;' +
+'if(MQ[k])clearTimeout(MQ[k]);' +
+'MQ[k]=setTimeout(function(){delete MQ[k];' +
+'MCHAIN=MCHAIN.then(function(){return sendMark(u,who,v,onFail,0)})' +
+'.catch(function(){})},450)}' +
+'function sendMark(u,who,v,onFail,tries){' +
+'return wfetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+v)' +
+'.then(function(r){' +
+'if(r.ok){MARKS[u]=MARKS[u]||{};if(v)MARKS[u][who]=v;else delete MARKS[u][who];return}' +
+'if(r.status===401){onFail("");return}' +
+'if((r.status===503||r.status===429)&&tries<1){' +
+'return new Promise(function(res){setTimeout(res,1200)})' +
+'.then(function(){return sendMark(u,who,v,onFail,tries+1)})}' +
+'onFail("Couldn\\u2019t save ("+r.status+"). Your other marks are fine \\u2014 try that one again.")})' +
+'.catch(function(e){onFail("Couldn\\u2019t reach the server. Check your connection and try again.")})}' +
 'function box(u,who){var b=document.createElement("button");var cur=st(MARKS[u]&&MARKS[u][who]);' +
 'function paint(v){b.className="m3"+(v?" "+CLS[v]:"");' +
 'b.textContent=GLYPH[v]||"";' +
 'b.title=who+": "+(WORD[v]||"undecided")}' +
 'paint(cur);' +
-'b.onclick=function(){var prev=cur;cur=CYCLE[(CYCLE.indexOf(cur)+1)%CYCLE.length];paint(cur);' +
-'var v=cur;wfetch("/events/mark?url="+encodeURIComponent(u)+"&who="+who+"&val="+v)' +
-'.then(function(r){if(!r.ok){cur=prev;paint(prev);' +
-'if(r.status!==401)alert("save failed")}' +
-'else{MARKS[u]=MARKS[u]||{};MARKS[u][who]=v}})' +
-'.catch(function(){cur=prev;paint(prev);alert("save failed")})};' +
+'b.onclick=function(){cur=CYCLE[(CYCLE.indexOf(cur)+1)%CYCLE.length];paint(cur);' +
+'var v=cur;markSave(u,who,v,function(msg){' +
+'cur=st(MARKS[u]&&MARKS[u][who]);paint(cur);if(msg)alert(msg)})};' +
 'return b}' +
 'function row(e){var r=mk("div","row"+(isToday(e.addedTs)?" new":""));' +
 'if(e.rule){r.style.borderLeftColor=e.rule.color;r.style.background=tint(e.rule.color)}' +
